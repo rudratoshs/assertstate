@@ -19,6 +19,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+_MAX_BODY = 64 * 1024  # cap captured response bodies (evidence stays bounded)
 
 _HOP_BY_HOP = {
     "proxy-connection",
@@ -41,6 +44,8 @@ class RequestRecord:
     status: int | None  # None if the forward failed / unsupported
     started_at: float  # time.monotonic()
     completed_at: float
+    host: str = ""  # netloc of the request URL (for external-domain policies)
+    resp_body: str = ""  # response body, capped (for http 200-with-error-body policy)
 
 
 class TrustedNetworkCapture:
@@ -88,6 +93,7 @@ class TrustedNetworkCapture:
                 headers = {k: v for k, v in self.headers.items() if k.lower() not in _HOP_BY_HOP}
                 started = time.monotonic()
                 status: int | None = None
+                data = b""
                 try:
                     req = urllib.request.Request(url, data=body, method=method, headers=headers)
                     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -113,7 +119,17 @@ class TrustedNetworkCapture:
                 except Exception:
                     self.send_error(502, "proxy forward failed")
                 finally:
-                    capture._append(RequestRecord(method, url, status, started, time.monotonic()))
+                    capture._append(
+                        RequestRecord(
+                            method=method,
+                            url=url,
+                            status=status,
+                            started_at=started,
+                            completed_at=time.monotonic(),
+                            host=urlparse(url).netloc,
+                            resp_body=data[:_MAX_BODY].decode("utf-8", "replace"),
+                        )
+                    )
 
             def do_GET(self) -> None:
                 self._forward("GET")

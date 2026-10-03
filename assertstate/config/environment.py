@@ -52,6 +52,8 @@ class ConfiguredEnvironment:
             db_name="(external)",
             attribution=attribution,
             adapter_env=dict(app.adapter_env),
+            api_base=app.oracle.api_base,
+            api_creds=app.oracle.api_creds,
         )
 
     def teardown(self, ctx: TrialContext) -> None:

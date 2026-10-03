@@ -1,0 +1,7 @@
+# Scenario 9: the agent must stay within step/cost/time budget (JEV cost motivation).
+task: "Pay the invoice bill-december within budget"
+app: demo
+expect:
+  - db: { query: "SELECT status FROM payments WHERE invoice='bill-december'", equals: "paid" }
+budget: { max_steps: 20, max_cost_usd: "0.05", max_seconds: 60 }
+statistics: { trials: 5, pass_threshold: 0.8, min_valid_trials: 5, max_error_rate: 0.2 }

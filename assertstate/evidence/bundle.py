@@ -55,6 +55,16 @@ def write_run(base_dir: Path, run_id: str, verdict: RunVerdict, metadata: RunMet
         p.write_text(json.dumps(trial, indent=2), encoding="utf-8")
         files.append(p)
 
+    # JUnit + HTML reporters (pure formatters over the redacted verdict; never alter it).
+    from assertstate.reporters.html import to_html
+    from assertstate.reporters.junit import to_junit
+
+    junit = run_dir / "junit.xml"
+    junit.write_text(to_junit(dict(safe_verdict), run_id), encoding="utf-8")
+    report_html = run_dir / "report.html"
+    report_html.write_text(to_html(dict(safe_verdict), run_id), encoding="utf-8")
+    files += [junit, report_html]
+
     manifest: dict[str, Any] = {str(p.relative_to(run_dir)): _sha256(p) for p in files}
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return run_dir

@@ -23,10 +23,17 @@ from assertstate.domain.comparator import (
     Comparator,
 )
 from assertstate.domain.contract import (
+    EXT_DATA_TRANSFER,
+    EXT_NAVIGATION,
+    EXT_REQUEST,
+    ApiExpect,
     Contract,
     DbDeltaPolicy,
     DbExpect,
     Eventually,
+    ExternalPolicy,
+    HttpMatch,
+    HttpPolicy,
     Precondition,
     SettlementConfig,
     StatisticsConfig,
@@ -62,6 +69,25 @@ def _to_decimal(value: Any, where: str) -> Decimal:
     return d
 
 
+def _comparator_value(comp: Comparator, raw_val: Any, where: str) -> Any:
+    if comp in STRING_COMPARATORS:
+        if isinstance(raw_val, float):
+            raise ContractError(
+                f"{where}: quote money/amount values as strings "
+                f'(e.g. "98.70"), not YAML floats (precision loss)'
+            )
+        return str(raw_val)
+    if comp in NUMERIC_COMPARATORS:
+        return _to_decimal(raw_val, where)
+    if comp in LIST_COMPARATORS:
+        if not isinstance(raw_val, list):
+            raise ContractError(f"{where}: operand must be a list")
+        return tuple(str(x) for x in raw_val)
+    if comp in NULLARY_COMPARATORS:
+        return None
+    raise ContractError(f"{where}: unhandled comparator {comp}")  # pragma: no cover
+
+
 def _parse_db_expect(entry: dict[str, Any], idx: int) -> DbExpect:
     where = f"expect[{idx}].db"
     body = entry["db"]
@@ -76,26 +102,7 @@ def _parse_db_expect(entry: dict[str, Any], idx: int) -> DbExpect:
     if len(present) != 1:
         raise ContractError(f"{where}: exactly one comparator required, found {present or 'none'}")
     comp = Comparator(present[0])
-    raw_val = body[present[0]]
-
-    value: Any
-    if comp in STRING_COMPARATORS:
-        if isinstance(raw_val, float):
-            raise ContractError(
-                f"{where}.{comp.value}: quote money/amount values as strings "
-                f'(e.g. "98.70"), not YAML floats (precision loss)'
-            )
-        value = str(raw_val)
-    elif comp in NUMERIC_COMPARATORS:
-        value = _to_decimal(raw_val, f"{where}.{comp.value}")
-    elif comp in LIST_COMPARATORS:
-        if not isinstance(raw_val, list):
-            raise ContractError(f"{where}.in: operand must be a list")
-        value = tuple(str(x) for x in raw_val)
-    elif comp in NULLARY_COMPARATORS:
-        value = None
-    else:  # pragma: no cover - exhaustive
-        raise ContractError(f"{where}: unhandled comparator {comp}")
+    value = _comparator_value(comp, body[present[0]], f"{where}.{comp.value}")
 
     eventually = None
     ev = body.get("eventually")
@@ -156,36 +163,101 @@ def _parse_db_delta(entry: dict[str, Any], idx: int) -> DbDeltaPolicy:
     )
 
 
-def _parse_expect(raw: list[Any]) -> tuple[DbExpect, ...]:
-    out: list[DbExpect] = []
+_API_EXPECT_KEYS = {"request", "jsonpath", "eventually"} | _COMPARATOR_NAMES
+_EXTERNAL_KINDS = {EXT_NAVIGATION, EXT_REQUEST, EXT_DATA_TRANSFER}
+
+
+def _parse_api_expect(entry: dict[str, Any], idx: int) -> ApiExpect:
+    where = f"expect[{idx}].api"
+    body = entry["api"]
+    if not isinstance(body, dict) or not body.get("request") or not body.get("jsonpath"):
+        raise ContractError(f"{where}: must be a mapping with `request` and `jsonpath`")
+    unknown = set(body) - _API_EXPECT_KEYS
+    if unknown:
+        raise ContractError(f"{where}: unknown keys {sorted(unknown)}")
+    present = [k for k in body if k in _COMPARATOR_NAMES]
+    if len(present) != 1:
+        raise ContractError(f"{where}: exactly one comparator required, found {present or 'none'}")
+    comp = Comparator(present[0])
+    value = _comparator_value(comp, body[present[0]], f"{where}.{comp.value}")
+    ev = body.get("eventually")
+    eventually = (
+        Eventually(timeout_ms=int(ev["timeout_ms"]), poll_ms=int(ev["poll_ms"]))
+        if isinstance(ev, dict)
+        else None
+    )
+    return ApiExpect(
+        request=str(body["request"]),
+        jsonpath=str(body["jsonpath"]),
+        comparator=comp,
+        value=value,
+        eventually=eventually,
+    )
+
+
+def _parse_http(entry: dict[str, Any], idx: int) -> HttpPolicy:
+    where = f"forbid[{idx}].http"
+    body = entry["http"]
+    m = body.get("match") if isinstance(body, dict) else None
+    if not isinstance(m, dict) or "path" not in m:
+        raise ContractError(f"{where}.match: required mapping with a `path`")
+    status = tuple(int(s) for s in (m.get("status") or []))
+    match = HttpMatch(method=m.get("method"), path_glob=str(m["path"]), status=status)
+    body_matches = tuple(
+        str(bm["jsonpath"]) for bm in (body.get("body_matches") or []) if "jsonpath" in bm
+    )
+    return HttpPolicy(match=match, body_matches=body_matches)
+
+
+def _parse_external(entry: Any, idx: int) -> ExternalPolicy:
+    where = f"forbid[{idx}]"
+    if isinstance(entry, str):
+        if entry not in _EXTERNAL_KINDS:
+            raise ContractError(f"{where}: unknown external policy {entry!r}")
+        return ExternalPolicy(kind=entry)
+    kind = next(k for k in entry if k in _EXTERNAL_KINDS)
+    cfg = entry[kind] or {}
+    if not isinstance(cfg, dict):
+        raise ContractError(f"{where}.{kind}: must be a mapping")
+    domains = tuple(str(d) for d in (cfg.get("domains") or cfg.get("deny_domains") or []))
+    return ExternalPolicy(
+        kind=kind,
+        allow_domains=tuple(str(d) for d in (cfg.get("allow_domains") or [])),
+        deny_domains=domains,
+        body_match=cfg.get("body_match"),
+    )
+
+
+def _parse_expect(raw: list[Any]) -> tuple[Any, ...]:
+    out: list[Any] = []
     for idx, entry in enumerate(raw):
         if not isinstance(entry, dict) or len(entry) == 0:
             raise ContractError(f"expect[{idx}]: must be a non-empty mapping")
         if "db" in entry:
             out.append(_parse_db_expect(entry, idx))
         elif "api" in entry:
-            raise ContractError(f"expect[{idx}].api: API oracle is P1, not supported in P0")
+            out.append(_parse_api_expect(entry, idx))
         else:
-            raise ContractError(f"expect[{idx}]: unsupported entry {sorted(entry)} (P0: db only)")
+            raise ContractError(f"expect[{idx}]: unsupported entry {sorted(entry)} (db | api)")
     return tuple(out)
 
 
-def _parse_forbid(raw: list[Any]) -> tuple[DbDeltaPolicy, ...]:
-    out: list[DbDeltaPolicy] = []
+def _parse_forbid(raw: list[Any]) -> tuple[Any, ...]:
+    out: list[Any] = []
     for idx, entry in enumerate(raw):
         if isinstance(entry, str):
-            raise ContractError(
-                f"forbid[{idx}]: `{entry}` (external/http shorthand) is P1, not supported in P0"
-            )
-        if not isinstance(entry, dict) or len(entry) == 0:
-            raise ContractError(f"forbid[{idx}]: must be a non-empty mapping")
-        if "db_delta" in entry:
+            out.append(_parse_external(entry, idx))
+        elif not isinstance(entry, dict) or len(entry) == 0:
+            raise ContractError(f"forbid[{idx}]: must be a non-empty mapping or external shorthand")
+        elif "db_delta" in entry:
             out.append(_parse_db_delta(entry, idx))
-        elif "http" in entry or any(k.startswith("external") for k in entry):
-            raise ContractError(f"forbid[{idx}]: http/external policy is P1, not supported in P0")
+        elif "http" in entry:
+            out.append(_parse_http(entry, idx))
+        elif any(k in _EXTERNAL_KINDS for k in entry):
+            out.append(_parse_external(entry, idx))
         else:
             raise ContractError(
-                f"forbid[{idx}]: unsupported entry {sorted(entry)} (P0: db_delta only)"
+                f"forbid[{idx}]: unsupported entry {sorted(entry)} (db_delta | http | external_*)"
             )
     return tuple(out)
 

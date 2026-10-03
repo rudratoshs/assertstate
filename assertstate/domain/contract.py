@@ -55,6 +55,17 @@ class DbExpect:
 
 
 @dataclass(frozen=True)
+class ApiExpect:
+    """expect.api — an authenticated read-only API assertion (FEATURE-SPEC §4.2)."""
+
+    request: str  # "GET /customers/acme/payments/latest" (method + path; GET/HEAD only)
+    jsonpath: str
+    comparator: Comparator
+    value: ComparatorValue
+    eventually: Eventually | None = None
+
+
+@dataclass(frozen=True)
 class DbDeltaPolicy:
     """forbid.db_delta — a causal before/after diff (FEATURE-SPEC §5; DEVELOPMENT §16)."""
 
@@ -68,6 +79,45 @@ class DbDeltaPolicy:
     max_changed: int = 0
     max_removed: int = 0
     key: str | None = None  # natural/idempotency key when the PK is not the diff key
+
+
+@dataclass(frozen=True)
+class HttpMatch:
+    method: str | None  # None = any
+    path_glob: str  # supports a trailing '*'
+    status: tuple[int, ...]  # match if response status is in this set (empty = any)
+
+
+@dataclass(frozen=True)
+class HttpPolicy:
+    """forbid.http — a network-trace predicate (FEATURE-SPEC §4.4), e.g. 200-with-error-body.
+
+    Fires when a captured request matches `match` AND any `body_matches` jsonpath is PRESENT
+    in the response body. Requires trusted network capture (observations).
+    """
+
+    match: HttpMatch
+    body_matches: tuple[str, ...] = ()
+
+
+# external-activity kinds (FEATURE-SPEC §5.3)
+EXT_NAVIGATION = "external_top_level_navigation"
+EXT_REQUEST = "external_request"
+EXT_DATA_TRANSFER = "external_data_transfer"
+
+
+@dataclass(frozen=True)
+class ExternalPolicy:
+    """forbid.external_* — browser left the app's domains / sent data out (FEATURE-SPEC §5.3)."""
+
+    kind: str  # one of EXT_NAVIGATION / EXT_REQUEST / EXT_DATA_TRANSFER
+    allow_domains: tuple[str, ...] = ()  # if set, any other domain fires
+    deny_domains: tuple[str, ...] = ()  # if set, these domains fire
+    body_match: str | None = None  # data_transfer: a substring that, if sent, fires (best-effort)
+
+
+ExpectEntry = DbExpect | ApiExpect
+ForbidEntry = DbDeltaPolicy | HttpPolicy | ExternalPolicy
 
 
 @dataclass(frozen=True)
@@ -97,7 +147,7 @@ class Contract:
     task: str
     app: str
     statistics: StatisticsConfig
-    expect: tuple[DbExpect, ...] = field(default_factory=tuple)
-    forbid: tuple[DbDeltaPolicy, ...] = field(default_factory=tuple)  # P0: db_delta only
+    expect: tuple[ExpectEntry, ...] = field(default_factory=tuple)  # db (P0) | api (P1)
+    forbid: tuple[ForbidEntry, ...] = field(default_factory=tuple)  # db_delta | http | external
     budget: ExecutionBudget | None = None
     preconditions: tuple[Precondition, ...] = field(default_factory=tuple)

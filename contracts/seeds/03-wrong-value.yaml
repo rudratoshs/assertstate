@@ -1,0 +1,6 @@
+# Scenario 3: form submitted with the wrong amount (Browser Use #1763, lost the goal).
+task: "Pay the invoice bill-december for 98.70"
+app: demo
+expect:
+  - db: { query: "SELECT amount FROM payments WHERE invoice='bill-december'", eq_canonical: "98.70" }
+statistics: { trials: 5, pass_threshold: 0.8, min_valid_trials: 5, max_error_rate: 0.2 }

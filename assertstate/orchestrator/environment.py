@@ -25,6 +25,8 @@ class TrialContext:
     capture: Any = field(default=None)  # trusted TrustedNetworkCapture for `bounded` (parent-owned)
     # causal only under single-writer isolation; a real shared-staging app is observed (§6.5)
     attribution: Attribution = Attribution.CAUSAL
+    api_base: str | None = None  # read-only API oracle base (for expect.api); None => no API
+    api_creds: str | None = None
 
 
 class Environment(Protocol):

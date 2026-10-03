@@ -1,0 +1,6 @@
+# Scenario 1: agent claims success but the record was never created (Browser Use #5955).
+task: "Pay the invoice bill-december"
+app: demo
+expect:
+  - db: { query: "SELECT status FROM payments WHERE invoice='bill-december'", equals: "paid" }
+statistics: { trials: 5, pass_threshold: 0.8, min_valid_trials: 5, max_error_rate: 0.2 }

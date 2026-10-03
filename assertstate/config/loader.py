@@ -48,7 +48,16 @@ def _app(name: str, raw: dict[str, Any]) -> AppConfig:
     if "browser" not in raw or "base_url" not in raw["browser"]:
         raise ConfigError(f"{where}.browser.base_url: required")
 
-    oracle = OracleConfig(db_dsn=_resolve(raw["oracle"]["db_dsn"], f"{where}.oracle.db_dsn"))
+    orc = raw["oracle"]
+    oracle = OracleConfig(
+        db_dsn=_resolve(orc["db_dsn"], f"{where}.oracle.db_dsn"),
+        api_base=str(orc["api_base"]) if orc.get("api_base") else None,
+        api_creds=(
+            _resolve(orc["api_creds_ref"], f"{where}.oracle.api_creds_ref")
+            if orc.get("api_creds_ref")
+            else None
+        ),
+    )
     b = raw["browser"]
     creds = _resolve(b["creds_ref"], f"{where}.browser.creds_ref") if "creds_ref" in b else None
     browser = BrowserConfig(base_url=str(b["base_url"]), creds=creds)

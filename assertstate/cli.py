@@ -161,8 +161,32 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    print("report: the artifact store/reporters are not wired yet (P0-05/P0-19).", file=sys.stderr)
-    return 2
+    # Resolve <run-id | path-to-run-dir | path-to-run.json> to a run.json.
+    target = Path(args.run)
+    if target.is_dir():
+        run_json = target / "run.json"
+    elif target.suffix == ".json":
+        run_json = target
+    else:
+        run_json = _REPO_ROOT / ".assertstate" / "runs" / args.run / "run.json"
+    if not run_json.exists():
+        print(f"report: no stored run at {run_json}", file=sys.stderr)
+        return 2
+
+    data = json.loads(run_json.read_text(encoding="utf-8"))
+    verdict = data.get("verdict", {})
+    run_id = data.get("run_id", args.run)
+    if args.format == "junit":
+        from assertstate.reporters.junit import to_junit
+
+        print(to_junit(verdict, run_id), end="")
+    elif args.format == "html":
+        from assertstate.reporters.html import to_html
+
+        print(to_html(verdict, run_id), end="")
+    else:
+        print(json.dumps(data, indent=2))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -185,8 +209,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--json", action="store_true")
     r.set_defaults(func=_cmd_run)
 
-    rep = sub.add_parser("report", help="format a stored run (P0-05/P0-19)")
+    rep = sub.add_parser("report", help="format a stored run (run-id, dir, or run.json)")
     rep.add_argument("run")
+    rep.add_argument("--format", choices=("json", "junit", "html"), default="json")
     rep.set_defaults(func=_cmd_report)
     return p
 

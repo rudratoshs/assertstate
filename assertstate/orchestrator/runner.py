@@ -12,16 +12,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from assertstate.adapters.base import AdapterError
 from assertstate.adapters.runner import run_adapter
-from assertstate.domain.contract import Contract, DbDeltaPolicy
+from assertstate.domain.contract import (
+    ApiExpect,
+    Contract,
+    DbDeltaPolicy,
+    DbExpect,
+    ExternalPolicy,
+    HttpPolicy,
+)
 from assertstate.domain.result import Attribution, Outcome, SettlementRecord, TrialResult
 from assertstate.domain.snapshot import Snapshot
 from assertstate.domain.trace import AgentTrace, BrowserObservations
 from assertstate.domain.verdict import RunVerdict
 from assertstate.env.seed import preconditions_established, verify_preconditions
 from assertstate.instrumentation.observations import observations_from_capture
+from assertstate.oracle.api_probe.probe import ApiProbe
 from assertstate.oracle.db_probe.probe import DbProbe, OracleError
 from assertstate.oracle.delta.engine import DeltaError, diff
 from assertstate.oracle.delta.predicate import PredicateError
@@ -31,8 +40,11 @@ from assertstate.oracle.snapshot.snapshot import SnapshotQuery, take_snapshot
 from assertstate.orchestrator.environment import Environment, TrialContext
 from assertstate.stats.aggregate import aggregate
 from assertstate.verifier.expect.comparators import ComparatorError
-from assertstate.verifier.expect.evaluator import evaluate_db_expect
+from assertstate.verifier.expect.evaluator import evaluate_api_expect, evaluate_db_expect
+from assertstate.verifier.jsonpath import JsonPathError
 from assertstate.verifier.policy_engine.db_delta import evaluate_db_delta
+from assertstate.verifier.policy_engine.external import evaluate_external
+from assertstate.verifier.policy_engine.http import evaluate_http
 
 
 @dataclass
@@ -43,8 +55,11 @@ class RunOutput:
 
 def _delta_specs(contract: Contract) -> list[SnapshotQuery]:
     specs = []
-    for idx, policy in enumerate(contract.forbid):
-        specs.append(SnapshotQuery(query_id=f"f{idx}", sql=policy.query, key=policy.key or "id"))
+    i = 0
+    for policy in contract.forbid:
+        if isinstance(policy, DbDeltaPolicy):
+            specs.append(SnapshotQuery(query_id=f"f{i}", sql=policy.query, key=policy.key or "id"))
+            i += 1
     return specs
 
 
@@ -54,19 +69,20 @@ def _settle(contract: Contract, probe: DbProbe, ctx: TrialContext) -> Settlement
     All-`bounded` -> bounded (needs the trusted capture anchor). Otherwise, if any policy
     requires `drain`, drain (the stronger server-side guarantee). No forbid -> no settle.
     """
-    modes = {p.settle.mode for p in contract.forbid}
+    deltas = [p for p in contract.forbid if isinstance(p, DbDeltaPolicy)]
+    modes = {p.settle.mode for p in deltas}
     if not modes:
-        return None
+        return None  # http/external policies need no DB settlement
 
     if modes == {"bounded"}:
-        max_wait = max((p.settle.max_wait_s or 0.0) for p in contract.forbid)
+        max_wait = max((p.settle.max_wait_s or 0.0) for p in deltas)
         if ctx.capture is not None:
             observations = observations_from_capture(ctx.capture)
         else:
             observations = BrowserObservations()  # no instrumentation -> anchor None -> ERROR
         return SettlementController().bounded(observations, max_wait_s=max_wait)
 
-    drains: list[DbDeltaPolicy] = [p for p in contract.forbid if p.settle.mode == "drain"]
+    drains = [p for p in deltas if p.settle.mode == "drain"]
     if drains:
         timeout = max((p.settle.timeout_s or 10.0) for p in drains)
         return SettlementController().drain(QueueProbe(probe), ctx.run_id, timeout_s=timeout).record
@@ -79,24 +95,47 @@ def _verify(
     after: Snapshot,
     probe: DbProbe,
     attribution: Attribution,
+    ctx: TrialContext,
 ) -> tuple[Outcome, str, list[dict[str, Any]], list[dict[str, Any]]]:
+    observations = (
+        observations_from_capture(ctx.capture) if ctx.capture is not None else BrowserObservations()
+    )
+    api_probe = ApiProbe(ctx.api_base, ctx.api_creds) if ctx.api_base else None
+    app_hosts = {urlparse(str(ctx.browser_target.get("base_url", ""))).netloc}
+
     expect_results: list[dict[str, Any]] = []
     expect_ok = True
     for e in contract.expect:
-        r = evaluate_db_expect(probe, e)
+        if isinstance(e, DbExpect):
+            r = evaluate_db_expect(probe, e)
+        elif isinstance(e, ApiExpect):
+            if api_probe is None:
+                raise OracleError("expect.api requires an api_base in the app config")
+            r = evaluate_api_expect(api_probe, e)
+        else:  # pragma: no cover - exhaustive
+            raise OracleError(f"unknown expect entry {type(e).__name__}")
         expect_results.append({"query": r.query, "ok": r.ok, "detail": r.detail})
         expect_ok = expect_ok and r.ok
 
     policy_results: list[dict[str, Any]] = []
     gating_fired = False
-    for idx, policy in enumerate(contract.forbid):
-        qid = f"f{idx}"
-        d = diff(qid, baseline.queries[qid], after.queries[qid])
-        pr = evaluate_db_delta(policy, d, attribution)
+    db_i = 0
+    for policy in contract.forbid:
+        if isinstance(policy, DbDeltaPolicy):
+            qid = f"f{db_i}"
+            db_i += 1
+            d = diff(qid, baseline.queries[qid], after.queries[qid])
+            pr = evaluate_db_delta(policy, d, attribution)
+        elif isinstance(policy, HttpPolicy):
+            pr = evaluate_http(policy, observations)
+        elif isinstance(policy, ExternalPolicy):
+            pr = evaluate_external(policy, observations, app_hosts)
+        else:  # pragma: no cover - exhaustive
+            raise OracleError(f"unknown forbid entry {type(policy).__name__}")
         policy_results.append(
-            {"query_id": qid, "fired": pr.fired, "gating": pr.gating, "detail": pr.detail}
+            {"kind": pr.kind, "fired": pr.fired, "gating": pr.gating, "detail": pr.detail}
         )
-        if pr.fired and pr.gating:  # observed (shared-staging) deltas are non-gating (§6.5)
+        if pr.fired and pr.gating:  # observed/uncaptured policies are non-gating (§6.5)
             gating_fired = True
 
     if not expect_ok or gating_fired:
@@ -154,7 +193,7 @@ def _run_trial(
 
         attribution = ctx.attribution
         outcome, reason, expect_results, policy_results = _verify(
-            contract, baseline, after, probe, attribution
+            contract, baseline, after, probe, attribution, ctx
         )
         return TrialResult(
             outcome=outcome,
@@ -169,7 +208,7 @@ def _run_trial(
         return TrialResult(outcome=Outcome.ERROR, reason=f"settlement: {exc}")
     except AdapterError as exc:
         return TrialResult(outcome=Outcome.ERROR, reason=f"adapter: {exc}")
-    except (OracleError, DeltaError, PredicateError, ComparatorError) as exc:
+    except (OracleError, DeltaError, PredicateError, ComparatorError, JsonPathError) as exc:
         return TrialResult(outcome=Outcome.ERROR, reason=f"{type(exc).__name__}: {exc}")
     finally:
         if ctx is not None:

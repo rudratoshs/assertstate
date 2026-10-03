@@ -103,18 +103,47 @@ def test_changed_where_shorthand_and_mapping() -> None:
     assert c.forbid[1].changed_where_after == "t != 'acme'"
 
 
-def test_api_expect_rejected_in_p0() -> None:
+def test_api_expect_parses() -> None:
+    from assertstate.domain.contract import ApiExpect
+
     raw = _base(expect=[{"api": {"request": "GET /x", "jsonpath": "$.s", "equals": "ok"}}])
-    with pytest.raises(Exception) as exc:
-        build_contract(raw)
-    assert "P1" in str(exc.value)
+    c = build_contract(raw)
+    assert isinstance(c.expect[0], ApiExpect)
+    assert c.expect[0].jsonpath == "$.s"
 
 
-def test_external_shorthand_rejected_in_p0() -> None:
-    raw = _base(forbid=["external_top_level_navigation"])
-    with pytest.raises(Exception) as exc:
-        build_contract(raw)
-    assert "P1" in str(exc.value)
+def test_api_expect_non_get_rejected() -> None:
+    _, report = _load_dict(
+        _base(expect=[{"api": {"request": "POST /x", "jsonpath": "$.s", "equals": "ok"}}])
+    )
+    assert not report.ok
+    assert any("GET/HEAD" in e for e in report.errors)
+
+
+def test_external_shorthand_parses() -> None:
+    from assertstate.domain.contract import EXT_NAVIGATION, ExternalPolicy
+
+    c = build_contract(_base(forbid=["external_top_level_navigation"]))
+    assert isinstance(c.forbid[0], ExternalPolicy)
+    assert c.forbid[0].kind == EXT_NAVIGATION
+
+
+def test_http_policy_parses() -> None:
+    from assertstate.domain.contract import HttpPolicy
+
+    raw = _base(
+        forbid=[
+            {
+                "http": {
+                    "match": {"method": "POST", "path": "/pay/*", "status": [200]},
+                    "body_matches": [{"jsonpath": "$.error"}],
+                }
+            }
+        ]
+    )
+    c = build_contract(raw)
+    assert isinstance(c.forbid[0], HttpPolicy)
+    assert c.forbid[0].body_matches == ("$.error",)
 
 
 def test_statistics_range_guards() -> None:

@@ -14,6 +14,7 @@ from assertstate.contract.sql import (
 )
 from assertstate.domain.contract import (
     SETTLE_MODES,
+    ApiExpect,
     Contract,
     DbDeltaPolicy,
 )
@@ -127,7 +128,18 @@ def validate_semantics(c: Contract) -> ValidationReport:
     _validate_statistics(c, report)
 
     for idx, policy in enumerate(c.forbid):
-        _validate_db_delta(policy, idx, report)
+        if isinstance(policy, DbDeltaPolicy):
+            _validate_db_delta(policy, idx, report)
+        # http / external policies are structurally validated at load; nothing further here.
+
+    # expect.api must be observational: GET/HEAD only (FEATURE-SPEC §3.7).
+    for idx, e in enumerate(c.expect):
+        if isinstance(e, ApiExpect):
+            method = e.request.strip().split(" ", 1)[0].upper()
+            if method not in ("GET", "HEAD"):
+                report.errors.append(
+                    f"expect[{idx}].api: observational only — {method} is not GET/HEAD"
+                )
 
     # Expect-causality warning (FEATURE-SPEC §5): an absolute expect does not prove the run
     # caused the state. P0 always runs isolated+seeded, which supplies the baseline — note it.

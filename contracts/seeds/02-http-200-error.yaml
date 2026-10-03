@@ -1,0 +1,8 @@
+# Scenario 2: a 200 response carrying an error body treated as success (jev-ultrafast #158).
+task: "Pay the invoice bill-december"
+app: demo
+forbid:
+  - http:
+      match: { method: POST, path: "/payments/*", status: [200, 201, 202] }
+      body_matches: [{ jsonpath: "$.error" }]
+statistics: { trials: 5, pass_threshold: 0.8, min_valid_trials: 5, max_error_rate: 0.2 }

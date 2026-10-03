@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class OracleConfig:
     db_dsn: str  # resolved read-only DSN (trusted)
-    # api_base / api_creds / api_allowlist are P1-later (parsed-inert elsewhere)
+    api_base: str | None = None  # read-only API oracle base (for expect.api)
+    api_creds: str | None = None  # resolved from api_creds_ref
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,8 @@ def observations_from_capture(
             "status": r.status,
             "started_at": r.started_at,
             "completed_at": r.completed_at,
+            "host": r.host,
+            "resp_body": r.resp_body,
         }
         for r in capture.records()
     )

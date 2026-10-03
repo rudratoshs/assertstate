@@ -1,0 +1,13 @@
+# Scenario 5: a duplicate payment created on retry (retry-safety).
+task: "Pay the invoice bill-december exactly once"
+app: demo
+preconditions:
+  - description: "no payment for this invoice before the run"
+    assert_query: "SELECT count(*) FROM payments WHERE invoice='bill-december'"
+    assert_equals: "0"
+forbid:
+  - db_delta:
+      query: "SELECT id FROM payments WHERE invoice='bill-december'"
+      max_added: 1
+      settle: { mode: drain, queue: payments, timeout: 10s }
+statistics: { trials: 5, pass_threshold: 0.8, min_valid_trials: 5, max_error_rate: 0.2 }

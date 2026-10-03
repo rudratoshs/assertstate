@@ -9,23 +9,11 @@ on shared staging an observed delta is non-gating and can never FAIL.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from assertstate.domain.contract import DbDeltaPolicy
 from assertstate.domain.result import Attribution
 from assertstate.domain.snapshot import Delta
 from assertstate.oracle.delta.predicate import matches
-
-
-@dataclass(frozen=True)
-class PolicyResult:
-    kind: str
-    fired: bool
-    gating: bool
-    added_hits: int
-    changed_hits: int
-    removed_hits: int
-    detail: str
+from assertstate.verifier.policy_engine.base import PolicyResult
 
 
 def _count_added(policy: DbDeltaPolicy, delta: Delta) -> int:
@@ -83,12 +71,4 @@ def evaluate_db_delta(
         f"removed={removed_hits}/max{policy.max_removed} "
         f"fired={fired} gating={gating}"
     )
-    return PolicyResult(
-        kind="db_delta",
-        fired=fired,
-        gating=gating,
-        added_hits=added_hits,
-        changed_hits=changed_hits,
-        removed_hits=removed_hits,
-        detail=detail,
-    )
+    return PolicyResult(kind="db_delta", fired=fired, gating=gating, detail=detail)
