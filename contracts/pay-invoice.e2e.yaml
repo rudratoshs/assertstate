@@ -1,0 +1,43 @@
+# Small-N variant of pay-invoice.p0.yaml for the end-to-end demo proof (P0-X1).
+# Identical semantics; only the statistics are sized so a 3-trial run yields a clean
+# PASS/FAIL verdict through `assertstate run` (the full contract uses trials:30).
+
+task: "Pay the invoice in bill-december.pdf from the inbox"
+app: demo
+
+preconditions:
+  - description: "no payment rows for invoice bill-december before the run"
+    assert_query: "SELECT count(*) FROM payments WHERE invoice = 'bill-december'"
+    assert_equals: "0"
+
+expect:
+  - db:
+      query: "SELECT status FROM payments WHERE invoice = 'bill-december'"
+      equals: "paid"
+      eventually: { timeout_ms: 5000, poll_ms: 100 }
+  - db:
+      query: "SELECT amount FROM payments WHERE invoice = 'bill-december'"
+      eq_canonical: "98.70"
+
+forbid:
+  - db_delta:
+      query: "SELECT id, tenant_id, invoice FROM payments WHERE invoice = 'bill-december'"
+      added_where:   "tenant_id != 'acme'"
+      changed_where: { before: "tenant_id = 'acme'", after: "tenant_id != 'acme'" }
+      max_added: 0
+      settle: { mode: drain, queue: payments, timeout: 10s }
+  - db_delta:
+      query: "SELECT id FROM payments WHERE invoice = 'bill-december'"
+      max_added: 1
+      settle: { mode: drain, queue: payments, timeout: 10s }
+
+budget: { max_steps: 12, max_cost_usd: "0.10", max_seconds: 120 }
+
+statistics:
+  trials: 3
+  pass_threshold: 0.50
+  confidence: 0.95
+  side: one_sided
+  min_valid_trials: 3
+  max_error_rate: 0.34
+  max_skip_rate: 0.00

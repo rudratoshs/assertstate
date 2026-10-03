@@ -1,0 +1,50 @@
+# P0 example contract (FEATURE-SPEC v2.3 schema). The agent claims DONE;
+# the application's own state decides whether it actually is.
+# Scenarios #1/#2/#5 from docs/scenarios.md (false-success + duplicate-on-retry + cross-tenant).
+#
+# NOTE: no `agent:` field — the execution adapter is chosen at run time (--adapter), FEATURE-SPEC §2.4.
+# P0 settlement is `drain` only; money literals are strings; P0 uses expect.db + forbid.db_delta.
+
+task: "Pay the invoice in bill-december.pdf from the inbox"
+app: demo
+
+preconditions:
+  # `invoice` is the natural/idempotency key for this demo; pin the baseline to 0 rows
+  # so `max_added: 1` genuinely constrains THIS run (FEATURE-SPEC §5.2).
+  - description: "no payment rows for invoice bill-december before the run"
+    assert_query: "SELECT count(*) FROM payments WHERE invoice = 'bill-december'"
+    assert_equals: "0"
+
+expect:
+  - db:
+      query: "SELECT status FROM payments WHERE invoice = 'bill-december'"
+      equals: "paid"
+      eventually: { timeout_ms: 10000, poll_ms: 250 }
+  - db:
+      query: "SELECT amount FROM payments WHERE invoice = 'bill-december'"
+      eq_canonical: "98.70"          # STRING, not a YAML float
+
+forbid:
+  # wrong-tenant: caught whether ADDED or re-pointed via UPDATE
+  - db_delta:
+      query: "SELECT id, tenant_id, invoice FROM payments WHERE invoice = 'bill-december'"
+      added_where:   "tenant_id != 'acme'"
+      changed_where: { before: "tenant_id = 'acme'", after: "tenant_id != 'acme'" }
+      max_added: 0
+      settle: { mode: drain, queue: payments, timeout: 10s }
+  # duplicate-on-retry: at most one NEW payment for this key
+  - db_delta:
+      query: "SELECT id FROM payments WHERE invoice = 'bill-december'"
+      max_added: 1
+      settle: { mode: drain, queue: payments, timeout: 10s }
+
+budget: { max_steps: 30, max_cost_usd: "0.10", max_seconds: 60 }
+
+statistics:
+  trials: 30
+  pass_threshold: 0.85
+  confidence: 0.95
+  side: one_sided
+  min_valid_trials: 25
+  max_error_rate: 0.10
+  max_skip_rate: 0.00
