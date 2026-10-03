@@ -18,9 +18,10 @@ from assertstate.adapters.runner import run_adapter
 from assertstate.domain.contract import Contract, DbDeltaPolicy
 from assertstate.domain.result import Attribution, Outcome, SettlementRecord, TrialResult
 from assertstate.domain.snapshot import Snapshot
-from assertstate.domain.trace import AgentTrace
+from assertstate.domain.trace import AgentTrace, BrowserObservations
 from assertstate.domain.verdict import RunVerdict
 from assertstate.env.seed import preconditions_established, verify_preconditions
+from assertstate.instrumentation.observations import observations_from_capture
 from assertstate.oracle.db_probe.probe import DbProbe, OracleError
 from assertstate.oracle.delta.engine import DeltaError, diff
 from assertstate.oracle.delta.predicate import PredicateError
@@ -47,17 +48,37 @@ def _delta_specs(contract: Contract) -> list[SnapshotQuery]:
     return specs
 
 
-def _drain_if_needed(contract: Contract, probe: DbProbe, run_id: str) -> SettlementRecord | None:
-    drains: list[DbDeltaPolicy] = [p for p in contract.forbid if p.settle.mode == "drain"]
-    if not drains:
+def _settle(contract: Contract, probe: DbProbe, ctx: TrialContext) -> SettlementRecord | None:
+    """Dispatch the contract's settlement. One settlement per trial (one after-snapshot).
+
+    All-`bounded` -> bounded (needs the trusted capture anchor). Otherwise, if any policy
+    requires `drain`, drain (the stronger server-side guarantee). No forbid -> no settle.
+    """
+    modes = {p.settle.mode for p in contract.forbid}
+    if not modes:
         return None
-    timeout = max((p.settle.timeout_s or 10.0) for p in drains)
-    result = SettlementController().drain(QueueProbe(probe), run_id, timeout_s=timeout)
-    return result.record
+
+    if modes == {"bounded"}:
+        max_wait = max((p.settle.max_wait_s or 0.0) for p in contract.forbid)
+        if ctx.capture is not None:
+            observations = observations_from_capture(ctx.capture)
+        else:
+            observations = BrowserObservations()  # no instrumentation -> anchor None -> ERROR
+        return SettlementController().bounded(observations, max_wait_s=max_wait)
+
+    drains: list[DbDeltaPolicy] = [p for p in contract.forbid if p.settle.mode == "drain"]
+    if drains:
+        timeout = max((p.settle.timeout_s or 10.0) for p in drains)
+        return SettlementController().drain(QueueProbe(probe), ctx.run_id, timeout_s=timeout).record
+    return None
 
 
 def _verify(
-    contract: Contract, baseline: Snapshot, after: Snapshot, probe: DbProbe
+    contract: Contract,
+    baseline: Snapshot,
+    after: Snapshot,
+    probe: DbProbe,
+    attribution: Attribution,
 ) -> tuple[Outcome, str, list[dict[str, Any]], list[dict[str, Any]]]:
     expect_results: list[dict[str, Any]] = []
     expect_ok = True
@@ -71,11 +92,11 @@ def _verify(
     for idx, policy in enumerate(contract.forbid):
         qid = f"f{idx}"
         d = diff(qid, baseline.queries[qid], after.queries[qid])
-        pr = evaluate_db_delta(policy, d, Attribution.CAUSAL)
+        pr = evaluate_db_delta(policy, d, attribution)
         policy_results.append(
             {"query_id": qid, "fired": pr.fired, "gating": pr.gating, "detail": pr.detail}
         )
-        if pr.fired and pr.gating:
+        if pr.fired and pr.gating:  # observed (shared-staging) deltas are non-gating (§6.5)
             gating_fired = True
 
     if not expect_ok or gating_fired:
@@ -125,17 +146,20 @@ def _run_trial(
             extra_env=ctx.adapter_env or None,  # agent-side creds only; oracle DSN never here
         )
 
-        settlement = _drain_if_needed(contract, probe, ctx.run_id)
+        settlement = _settle(contract, probe, ctx)
 
         after = take_snapshot(probe, specs)
         if not after.usable:
             return TrialResult(outcome=Outcome.ERROR, reason="after snapshot unusable")
 
-        outcome, reason, expect_results, policy_results = _verify(contract, baseline, after, probe)
+        attribution = ctx.attribution
+        outcome, reason, expect_results, policy_results = _verify(
+            contract, baseline, after, probe, attribution
+        )
         return TrialResult(
             outcome=outcome,
             reason=reason,
-            attribution=Attribution.CAUSAL,
+            attribution=attribution,
             expect_results=tuple(expect_results),
             policy_results=tuple(policy_results),
             settlement=settlement,

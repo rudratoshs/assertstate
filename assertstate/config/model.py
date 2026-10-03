@@ -1,0 +1,51 @@
+"""Typed `assertstate.yaml` config model (DEVELOPMENT.md §6; FEATURE-SPEC §14).
+
+Separates TRUSTED oracle config (read-only db_dsn) from agent-visible browser config. The
+split is the same trust boundary the runtime enforces: the oracle DSN is never placed on the
+BrowserTarget.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class OracleConfig:
+    db_dsn: str  # resolved read-only DSN (trusted)
+    # api_base / api_creds / api_allowlist are P1-later (parsed-inert elsewhere)
+
+
+@dataclass(frozen=True)
+class BrowserConfig:
+    base_url: str
+    creds: str | None = None  # agent-visible; resolved from creds_ref
+
+
+@dataclass(frozen=True)
+class EnvironmentConfig:
+    # "shared" => observed attribution (db_delta non-gating); "reset_hook" => causal via reset_cmd
+    strategy: str = "shared"
+    reset_cmd: str | None = None
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    name: str
+    oracle: OracleConfig
+    browser: BrowserConfig
+    environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
+    adapter_env: dict[str, str] = field(default_factory=dict)  # agent creds (e.g. LLM key)
+
+
+@dataclass(frozen=True)
+class AssertStateConfig:
+    apps: dict[str, AppConfig]
+    statistics_defaults: dict[str, object] = field(default_factory=dict)
+    redaction_mode: str = "allowlist"
+    canonicalizer: str = "canon-v1"
+
+    def app(self, name: str) -> AppConfig:
+        if name not in self.apps:
+            raise KeyError(f"app {name!r} not in config (have: {sorted(self.apps)})")
+        return self.apps[name]

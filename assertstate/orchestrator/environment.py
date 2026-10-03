@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from assertstate.domain.result import Attribution
+
 
 @dataclass
 class TrialContext:
@@ -20,6 +22,9 @@ class TrialContext:
     db_name: str
     handle: Any = field(default=None)  # env-specific teardown handle (e.g. a worker)
     adapter_env: dict[str, str] = field(default_factory=dict)  # agent-side creds (e.g. LLM key)
+    capture: Any = field(default=None)  # trusted TrustedNetworkCapture for `bounded` (parent-owned)
+    # causal only under single-writer isolation; a real shared-staging app is observed (§6.5)
+    attribution: Attribution = Attribution.CAUSAL
 
 
 class Environment(Protocol):

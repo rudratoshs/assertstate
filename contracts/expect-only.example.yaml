@@ -1,0 +1,19 @@
+# Expect-only contract for config-driven runs against a real app (no forbid => no settlement).
+# Verifies the application's final state; useful with the noop adapter for post-hoc checking.
+
+task: "verify the payment for bill-x posted"
+app: external
+
+expect:
+  - db:
+      query: "SELECT status FROM payments WHERE invoice = 'bill-x'"
+      equals: "paid"
+
+statistics:
+  trials: 1
+  pass_threshold: 0.25
+  confidence: 0.95
+  side: one_sided
+  min_valid_trials: 1
+  max_error_rate: 0.0
+  max_skip_rate: 0.0

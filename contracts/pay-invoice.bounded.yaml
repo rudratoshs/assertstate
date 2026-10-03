@@ -1,0 +1,45 @@
+# Bounded-settlement variant (P1). Same semantics as pay-invoice.e2e.yaml, but settlement
+# is `bounded`: wait a documented max_wait from the trusted last causal browser request,
+# then snapshot. max_wait (2s) exceeds the demo's 0.5s worker-retry so the duplicate is
+# observable under the documented propagation assumption. (bounded does NOT independently
+# detect escaped writes — drain is the mechanism for that.)
+
+task: "Pay the invoice in bill-december.pdf from the inbox"
+app: demo
+
+preconditions:
+  - description: "no payment rows for invoice bill-december before the run"
+    assert_query: "SELECT count(*) FROM payments WHERE invoice = 'bill-december'"
+    assert_equals: "0"
+
+expect:
+  - db:
+      query: "SELECT status FROM payments WHERE invoice = 'bill-december'"
+      equals: "paid"
+      eventually: { timeout_ms: 5000, poll_ms: 100 }
+  - db:
+      query: "SELECT amount FROM payments WHERE invoice = 'bill-december'"
+      eq_canonical: "98.70"
+
+forbid:
+  - db_delta:
+      query: "SELECT id, tenant_id, invoice FROM payments WHERE invoice = 'bill-december'"
+      added_where:   "tenant_id != 'acme'"
+      changed_where: { before: "tenant_id = 'acme'", after: "tenant_id != 'acme'" }
+      max_added: 0
+      settle: { mode: bounded, max_wait: 2s }
+  - db_delta:
+      query: "SELECT id FROM payments WHERE invoice = 'bill-december'"
+      max_added: 1
+      settle: { mode: bounded, max_wait: 2s }
+
+budget: { max_steps: 12, max_cost_usd: "0.10", max_seconds: 60 }
+
+statistics:
+  trials: 3
+  pass_threshold: 0.50
+  confidence: 0.95
+  side: one_sided
+  min_valid_trials: 3
+  max_error_rate: 0.34
+  max_skip_rate: 0.00

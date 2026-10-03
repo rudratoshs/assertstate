@@ -16,8 +16,8 @@ SETTLE_DRAIN = "drain"
 SETTLE_BOUNDED = "bounded"
 SETTLE_RUN_CORRELATED = "run_correlated"
 SETTLE_MODES = frozenset({SETTLE_DRAIN, SETTLE_BOUNDED, SETTLE_RUN_CORRELATED})
-#: Only this mode is correctness-valid (runnable) in P0 (DEVELOPMENT §18).
-P0_SETTLE_MODES = frozenset({SETTLE_DRAIN})
+#: Runnable settlement modes: drain (P0) + bounded (P1). run_correlated stays P2/deferred.
+RUNNABLE_SETTLE_MODES = frozenset({SETTLE_DRAIN, SETTLE_BOUNDED})
 
 
 @dataclass(frozen=True)
@@ -32,14 +32,16 @@ class Eventually:
 class SettlementConfig:
     """When the after-snapshot may be taken (FEATURE-SPEC §5a; DEVELOPMENT §18)."""
 
-    mode: str  # one of SETTLE_MODES; P0 runs only SETTLE_DRAIN
+    mode: str  # one of SETTLE_MODES; runnable: drain (P0) + bounded (P1)
     queue: str | None = None  # drain: workflow-owned queue name
     timeout_s: float | None = None  # drain: timeout -> ERROR on expiry
-    max_wait_s: float | None = None  # bounded (P1): documented propagation bound
+    max_wait_s: float | None = (
+        None  # bounded: documented propagation bound from last causal request
+    )
 
     @property
-    def p0_supported(self) -> bool:
-        return self.mode in P0_SETTLE_MODES
+    def runnable(self) -> bool:
+        return self.mode in RUNNABLE_SETTLE_MODES
 
 
 @dataclass(frozen=True)

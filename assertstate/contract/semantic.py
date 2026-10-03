@@ -44,17 +44,20 @@ def _validate_db_delta(policy: DbDeltaPolicy, idx: int, report: ValidationReport
         report.errors.append(
             f"{where}.settle.mode: unknown {policy.settle.mode!r} (one of {sorted(SETTLE_MODES)})"
         )
-    elif not policy.settle.p0_supported:
+    elif not policy.settle.runnable:  # run_correlated is P2/deferred
         report.warnings.append(
-            f"{where}.settle.mode={policy.settle.mode}: valid spec, but P0 runs only `drain`; "
-            f"this contract is not runnable until P1 (DEVELOPMENT §18)"
+            f"{where}.settle.mode={policy.settle.mode}: valid spec, but not runnable yet "
+            f"(run_correlated is P2); runnable modes are drain and bounded"
         )
-    # drain requires a workflow-owned queue AND a timeout (FEATURE-SPEC §5; DEVELOPMENT §18).
+    # Per-mode required fields.
     if policy.settle.mode == "drain":
         if not policy.settle.queue:
             report.errors.append(f"{where}.settle: drain requires a `queue` (workflow-owned)")
         if policy.settle.timeout_s is None:
             report.errors.append(f"{where}.settle: drain requires a `timeout`")
+    elif policy.settle.mode == "bounded":
+        if policy.settle.max_wait_s is None:
+            report.errors.append(f"{where}.settle: bounded requires a `max_wait`")
 
     has_pred = any(
         [

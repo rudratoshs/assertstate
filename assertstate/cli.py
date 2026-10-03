@@ -11,12 +11,19 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from assertstate import __version__
 from assertstate.contract.loader import load_and_validate
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEMO_ADAPTER = "assertstate.adapters.demo_adapter:DemoAdapter"
+_ADAPTERS = {
+    "browser-use": "assertstate.adapters.browser_use_adapter:BrowserUseAdapter",
+    "http": "assertstate.adapters.http_demo_adapter:HttpDemoAdapter",
+    "noop": "assertstate.adapters.noop_adapter:NoopAdapter",
+    "demo": _DEMO_ADAPTER,
+}
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -35,53 +42,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 2
 
 
-def _cmd_run(args: argparse.Namespace) -> int:
-    contract, report = load_and_validate(args.contract)
-    for e in report.errors:
-        print(f"error: {e}", file=sys.stderr)
-    if contract is None:
-        return 2
-
-    if args.app != "demo":
-        print(
-            "run: P0 wires only the built-in demo app (`--app demo`). A generic app target "
-            "needs config (P0-04) + the Browser Use adapter (P0-14), both pending.",
-            file=sys.stderr,
-        )
-        return 4
-
-    # Built-in demo environment lives under demo-app/ (needs it on sys.path).
-    demo_dir = _REPO_ROOT / "demo-app"
-    if str(demo_dir) not in sys.path:
-        sys.path.insert(0, str(demo_dir))
-    from environment import DemoEnvironment  # type: ignore[import-not-found]
-
-    from assertstate.contract.loader import hash_contract
-    from assertstate.domain.metadata import RunMetadata
-    from assertstate.domain.verdict import RunOutcome
-    from assertstate.evidence.bundle import write_run
-    from assertstate.orchestrator.runner import run_contract
-
-    env = DemoEnvironment(scenario=args.scenario)
-    out = run_contract(contract, env, _DEMO_ADAPTER, trials=args.trials)
-    verdict = out.verdict
-
-    metadata = RunMetadata(
-        run_id=args.run_id or "demo-run",
-        assertstate_version=__version__,
-        contract_hash=hash_contract(args.contract),
-        scenario_id=args.scenario,
-        adapter_name="demo",
-        statistics_config={
-            "trials": verdict.total_trials,
-            "pass_threshold": verdict.pass_threshold,
-            "confidence": verdict.confidence,
-            "side": verdict.side,
-        },
-        settlement_config={"mode": "drain"},
-    )
-    run_dir = write_run(_REPO_ROOT / ".assertstate", metadata.run_id, verdict, metadata)
-
+def _print_verdict(verdict: Any, run_dir: object, as_json: bool) -> None:
     summary = {
         "verdict": verdict.verdict.value,
         "trials": verdict.total_trials,
@@ -94,7 +55,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "reason": verdict.reason,
         "evidence": str(run_dir),
     }
-    if args.json:
+    if as_json:
         print(json.dumps(summary, indent=2))
     else:
         print(
@@ -103,6 +64,99 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         print(f"evidence: {run_dir}", file=sys.stderr)
 
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    contract, report = load_and_validate(args.contract)
+    for e in report.errors:
+        print(f"error: {e}", file=sys.stderr)
+    if contract is None:
+        return 2
+
+    # Config-driven run against a real app described by assertstate.yaml.
+    if args.config:
+        from assertstate.config.environment import ConfiguredEnvironment
+        from assertstate.config.loader import ConfigError, load_config
+        from assertstate.contract.loader import hash_contract
+        from assertstate.domain.metadata import RunMetadata
+        from assertstate.domain.verdict import RunOutcome
+        from assertstate.evidence.bundle import write_run
+        from assertstate.orchestrator.runner import run_contract
+
+        if args.adapter not in _ADAPTERS:
+            print(f"run: unknown --adapter {args.adapter!r} ({sorted(_ADAPTERS)})", file=sys.stderr)
+            return 2
+        try:
+            cfg = load_config(args.config)
+            app_cfg = cfg.app(args.app or "")
+        except (ConfigError, KeyError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        cenv: object = ConfiguredEnvironment(app_cfg)
+        cout = run_contract(contract, cenv, _ADAPTERS[args.adapter], trials=args.trials)  # type: ignore[arg-type]
+        cmeta = RunMetadata(
+            run_id=args.run_id or f"{args.app}-run",
+            assertstate_version=__version__,
+            contract_hash=hash_contract(args.contract),
+            scenario_id=args.scenario,
+            adapter_name=args.adapter,
+        )
+        cdir = write_run(_REPO_ROOT / ".assertstate", cmeta.run_id, cout.verdict, cmeta)
+        _print_verdict(cout.verdict, cdir, args.json)
+        return {RunOutcome.PASS: 0, RunOutcome.FAIL: 1, RunOutcome.INCONCLUSIVE: 3}[
+            cout.verdict.verdict
+        ]
+
+    if args.app not in ("demo", "bounded-demo"):
+        print(
+            "run: built-in `--app demo` (drain) / `--app bounded-demo` (bounded), or "
+            "`--config assertstate.yaml --app <name>` for a real app.",
+            file=sys.stderr,
+        )
+        return 4
+
+    # Built-in demo environments live under demo-app/ (needs it on sys.path).
+    demo_dir = _REPO_ROOT / "demo-app"
+    if str(demo_dir) not in sys.path:
+        sys.path.insert(0, str(demo_dir))
+
+    from assertstate.contract.loader import hash_contract
+    from assertstate.domain.metadata import RunMetadata
+    from assertstate.domain.verdict import RunOutcome
+    from assertstate.evidence.bundle import write_run
+    from assertstate.orchestrator.runner import run_contract
+
+    if args.app == "bounded-demo":
+        from bounded_environment import BoundedDemoEnvironment  # type: ignore[import-not-found]
+
+        env: object = BoundedDemoEnvironment(buggy=(args.scenario in ("slow_retry", "buggy")))
+        adapter_spec = "assertstate.adapters.http_demo_adapter:HttpDemoAdapter"
+        settle_mode = "bounded"
+    else:
+        from environment import DemoEnvironment  # type: ignore[import-not-found]
+
+        env = DemoEnvironment(scenario=args.scenario)
+        adapter_spec = _DEMO_ADAPTER
+        settle_mode = "drain"
+
+    out = run_contract(contract, env, adapter_spec, trials=args.trials)  # type: ignore[arg-type]
+    verdict = out.verdict
+
+    metadata = RunMetadata(
+        run_id=args.run_id or f"{args.app}-run",
+        assertstate_version=__version__,
+        contract_hash=hash_contract(args.contract),
+        scenario_id=args.scenario,
+        adapter_name=args.app,
+        statistics_config={
+            "trials": verdict.total_trials,
+            "pass_threshold": verdict.pass_threshold,
+            "confidence": verdict.confidence,
+            "side": verdict.side,
+        },
+        settlement_config={"mode": settle_mode},
+    )
+    run_dir = write_run(_REPO_ROOT / ".assertstate", metadata.run_id, verdict, metadata)
+    _print_verdict(verdict, run_dir, args.json)
     return {RunOutcome.PASS: 0, RunOutcome.FAIL: 1, RunOutcome.INCONCLUSIVE: 3}[verdict.verdict]
 
 
@@ -124,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("contract")
     r.add_argument("--adapter", default="browser-use")
     r.add_argument("--app", default=None)
+    r.add_argument("--config", default=None, help="assertstate.yaml for a real app target")
     r.add_argument("--scenario", default="correct", help="demo app behavior (correct|slow_retry)")
     r.add_argument("--run-id", dest="run_id", default=None)
     r.add_argument("--trials", type=int, default=None)

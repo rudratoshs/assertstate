@@ -223,7 +223,7 @@ def test_select_star_covers_all_columns() -> None:
     assert report.ok, report.errors
 
 
-def test_bounded_mode_is_warned_not_runnable_in_p0() -> None:
+def test_bounded_mode_is_runnable_with_max_wait() -> None:
     _, report = _load_dict(
         _base(
             forbid=[
@@ -237,8 +237,44 @@ def test_bounded_mode_is_warned_not_runnable_in_p0() -> None:
             ]
         )
     )
-    assert report.ok  # valid spec
-    assert any("P0 runs only `drain`" in w for w in report.warnings)
+    assert report.ok, report.errors
+    assert not any("not runnable" in w for w in report.warnings)  # bounded is P1-runnable now
+
+
+def test_bounded_requires_max_wait() -> None:
+    _, report = _load_dict(
+        _base(
+            forbid=[
+                {
+                    "db_delta": {
+                        "query": "SELECT id FROM p",
+                        "max_added": 1,
+                        "settle": {"mode": "bounded"},
+                    }
+                }
+            ]
+        )
+    )
+    assert not report.ok
+    assert any("bounded requires a `max_wait`" in e for e in report.errors)
+
+
+def test_run_correlated_is_warned_not_runnable() -> None:
+    _, report = _load_dict(
+        _base(
+            forbid=[
+                {
+                    "db_delta": {
+                        "query": "SELECT id FROM p",
+                        "max_added": 1,
+                        "settle": {"mode": "run_correlated"},
+                    }
+                }
+            ]
+        )
+    )
+    assert report.ok  # valid spec, but P2
+    assert any("run_correlated is P2" in w for w in report.warnings)
 
 
 # --- helper: validate a dict by writing it to a temp file (loader reads paths) ---
