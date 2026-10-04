@@ -272,8 +272,113 @@ def _cmd_report(args: argparse.Namespace) -> int:
         from assertstate.reporters.html import to_html
 
         print(to_html(verdict, run_id), end="")
+    elif args.format == "summary":
+        from assertstate.reporters.summary import to_step_summary
+
+        print(to_step_summary(data), end="")
     else:
         print(json.dumps(data, indent=2))
+    return 0
+
+
+def _resolve_run_json(ref: str) -> Path:
+    target = Path(ref)
+    if target.is_dir():
+        return target / "run.json"
+    if target.suffix == ".json":
+        return target
+    return _REPO_ROOT / ".assertstate" / "runs" / ref / "run.json"
+
+
+def _cmd_compare(args: argparse.Namespace) -> int:
+    """Regression / version comparison (FEATURE-SPEC §8.5, §10): is the candidate run
+    SIGNIFICANTLY worse than the baseline? Exit 1 if it regressed, 0 otherwise (CI-gating).
+    This is NOT the Wilson acceptance gate — it uses the two-proportion difference test.
+    """
+    from assertstate.stats.compare import two_proportion
+
+    base_json = _resolve_run_json(args.baseline)
+    cand_json = _resolve_run_json(args.candidate)
+    for label, p in (("baseline", base_json), ("candidate", cand_json)):
+        if not p.exists():
+            print(f"compare: no stored {label} run at {p}", file=sys.stderr)
+            return 2
+    base = json.loads(base_json.read_text(encoding="utf-8")).get("verdict", {})
+    cand = json.loads(cand_json.read_text(encoding="utf-8")).get("verdict", {})
+    try:
+        result = two_proportion(
+            int(base["passed"]),
+            int(base["valid_trials"]),
+            int(cand["passed"]),
+            int(cand["valid_trials"]),
+            confidence=args.confidence,
+            side="one_sided",
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"compare: cannot compare these runs ({exc})", file=sys.stderr)
+        return 2
+    if args.json:
+        from dataclasses import asdict
+
+        print(json.dumps(asdict(result), indent=2))
+    else:
+        verdict = "REGRESSED" if result.regressed else "no significant regression"
+        print(f"{verdict}: {result.detail}")
+    return 1 if result.regressed else 0
+
+
+_INIT_CONFIG = """\
+# assertstate.yaml — oracle + browser config for a real app target (FEATURE-SPEC §14).
+apps:
+  staging:
+    browser:
+      base_url: "https://staging.example.com"
+      creds_ref: "env:STAGING_BROWSER_LOGIN"   # resolved trusted-side, redacted in evidence
+    oracle:
+      db_dsn: "env:ORACLE_DSN"                  # MUST resolve to a READ-ONLY role
+      # api_base: "https://staging.example.com/api"   # optional read-only API oracle (GET/HEAD)
+    environment:
+      strategy: shared                          # shared (observed) | reset_hook | template_restore
+      # reset_cmd: "./reset-staging.sh"         # required for reset_hook / template_restore
+redaction:
+  mode: allowlist                               # fail-closed default
+  allow_fields: []                              # widen only with non-sensitive field names
+"""
+
+_INIT_CONTRACT = """\
+# Starter contract. `assertstate validate <file>`, then
+# `assertstate run <file> --config assertstate.yaml --app staging`.
+task: "Describe the workflow the agent must accomplish, in plain language"
+app: staging
+expect:
+  - db: { query: "SELECT status FROM orders WHERE ref='ABC'", equals: "paid" }
+forbid:
+  - db_delta:
+      query: "SELECT id FROM orders"
+      max_added: 1                              # 0 = none allowed; omit to not police a set
+      settle: { mode: drain, queue: orders, timeout: 10s }
+statistics: { trials: 20, pass_threshold: 0.9, min_valid_trials: 20, max_error_rate: 0.1 }
+"""
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    """Scaffold a starter assertstate.yaml + example contract (no-overwrite)."""
+    target = Path(args.dir)
+    cfg = target / "assertstate.yaml"
+    contracts_dir = target / "contracts"
+    contract = contracts_dir / "getting-started.yaml"
+    existing = [p for p in (cfg, contract) if p.exists()]
+    if existing:
+        print(
+            f"init: refusing to overwrite existing {', '.join(str(p) for p in existing)}",
+            file=sys.stderr,
+        )
+        return 2
+    contracts_dir.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(_INIT_CONFIG, encoding="utf-8")
+    contract.write_text(_INIT_CONTRACT, encoding="utf-8")
+    print(f"init: wrote {cfg} and {contract}")
+    print("next: edit them, then `assertstate validate contracts/getting-started.yaml`")
     return 0
 
 
@@ -306,8 +411,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     rep = sub.add_parser("report", help="format a stored run (run-id, dir, or run.json)")
     rep.add_argument("run")
-    rep.add_argument("--format", choices=("json", "junit", "html"), default="json")
+    rep.add_argument("--format", choices=("json", "junit", "html", "summary"), default="json")
     rep.set_defaults(func=_cmd_report)
+
+    cmp_ = sub.add_parser(
+        "compare", help="regression gate: is the candidate run significantly worse than baseline?"
+    )
+    cmp_.add_argument("baseline", help="baseline run-id, run dir, or run.json")
+    cmp_.add_argument("candidate", help="candidate run-id, run dir, or run.json")
+    cmp_.add_argument("--confidence", type=float, default=0.95)
+    cmp_.add_argument("--json", action="store_true")
+    cmp_.set_defaults(func=_cmd_compare)
+
+    ini = sub.add_parser("init", help="scaffold a starter assertstate.yaml + example contract")
+    ini.add_argument("--dir", default=".", help="target directory (default: current)")
+    ini.set_defaults(func=_cmd_init)
     return p
 
 

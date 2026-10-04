@@ -35,6 +35,30 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _scope_statement(safe_verdict: dict[str, Any], safe_meta: dict[str, Any]) -> dict[str, str]:
+    """A self-describing scope statement (FEATURE-SPEC §11): what this run establishes and what it
+    does NOT. Composed only from already-safe verdict/metadata scalars — never any row data."""
+    v = safe_verdict
+    return {
+        "establishes": (
+            f"Verdict {v.get('verdict')} over {v.get('total_trials')} trials "
+            f"({v.get('valid_trials')} valid: {v.get('passed')} PASS / {v.get('failed')} FAIL) — "
+            f"the application's own state (read-only oracle) satisfied the contract's expectations "
+            f"and no gating side-effect policy fired, at Wilson lower bound "
+            f"{v.get('wilson_lower')} ({v.get('side')}, confidence {v.get('confidence')}) vs "
+            f"pass_threshold {v.get('pass_threshold')}. Canonicalizer "
+            f"{safe_meta.get('canonicalizer_version')}."
+        ),
+        "does_not_establish": (
+            "Correctness of DB columns the contract does not project; behavior outside the "
+            "contract's assertions; causal attribution of side-effects under 'observed' "
+            "(shared-staging) attribution, where db_delta is non-gating; properties needing "
+            "instrumentation not present in this run (e.g. HTTPS/CDP capture); and anything about "
+            "the agent's internal reasoning (agent_claimed_done is recorded, never trusted)."
+        ),
+    }
+
+
 def _fsync_file(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY)
     try:
@@ -95,6 +119,7 @@ def write_run(
                     "written_at": datetime.now(timezone.utc).isoformat(),
                     "verdict": safe_verdict,
                     "metadata": safe_meta,
+                    "scope": _scope_statement(dict(safe_verdict), dict(safe_meta)),
                 },
                 indent=2,
             ),

@@ -1,0 +1,46 @@
+# Example: gate a PR on an AssertState contract using the bundled composite Action.
+#
+# This repo runs the Action via `uses: ./`. A CONSUMER repo references it by ref
+# (`uses: your-org/assertstate@v1`): the Action self-installs AssertState from its own checked-out
+# source when it is not already importable, so no registry/credential is required (see FEATURE-SPEC §10).
+name: AssertState
+
+on:
+  pull_request:
+    paths: ["contracts/**", "assertstate/**"]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read # least privilege; the demo path needs no repo secrets
+
+jobs:
+  assertstate: # stable job name -> use "assertstate" as the required status check (see docs)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync
+      # Built-in demo path (no config, no secrets — safe on fork PRs).
+      - name: Run AssertState
+        uses: ./ # consumer: your-org/assertstate@v1
+        with:
+          contract: contracts/pay-invoice.e2e.yaml
+          app: demo
+          adapter: demo
+          scenario: correct
+          run-id: pr-${{ github.run_id }}
+          # For a real app instead of the demo:
+          #   config: assertstate.yaml
+          #   app: staging
+          #   adapter: browser-use
+          # baseline: main-baseline   # regression-gate against a stored run

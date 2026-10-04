@@ -179,6 +179,16 @@ def test_bundle_is_durable_and_atomic(tmp_path: Path) -> None:
     assert {"run.json", "manifest.json", "contract.yaml"} <= names
 
 
+def test_bundle_has_scope_statement(tmp_path: Path) -> None:
+    # §11: the bundle self-describes what it establishes and does NOT, with no row data.
+    run_dir = write_run(tmp_path, "r-scope", _verdict(), _meta())
+    data = json.loads((run_dir / "run.json").read_text())
+    scope = data["scope"]
+    assert "establishes" in scope and "does_not_establish" in scope
+    assert "agent_claimed_done is recorded, never trusted" in scope["does_not_establish"]
+    assert "observed" in scope["does_not_establish"]  # names the non-causal caveat
+
+
 def test_bundle_refuses_to_overwrite_existing_run(tmp_path: Path) -> None:
     write_run(tmp_path, "r1", _verdict(), _meta())
     with pytest.raises(EvidenceError, match="overwrite"):

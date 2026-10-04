@@ -250,7 +250,7 @@ P0 commands (FEATURE-SPEC §14). No `init`, no hosted/API commands.
 |---|---|---|---|---|
 | `assertstate validate <contract>` | contract path | validation summary (ok/errors) | parse/validation errors | 0 ok · 2 invalid |
 | `assertstate run <contract> [--adapter A] [--app <name>] [--config FILE] [--scenario S] [--sandbox auto\|container\|off] [--run-id ID] [--trials N] [--json]` | contract path + options | RunVerdict (human; JSON with `--json`) | run/infra errors | **0 = Run PASS · 1 = Run FAIL · 2 = usage/invalid · 3 = INCONCLUSIVE · 4 = ERROR-dominated** |
-| `assertstate report <run-id \| path>` | run id or `.assertstate/runs/<id>` | stored RunVerdict (human/JSON) | not-found | 0 ok · 2 not found |
+| `assertstate report <run-id \| path> [--format json\|junit\|html\|summary]` | run id or `.assertstate/runs/<id>` | stored RunVerdict (json/junit/html, or a redacted GitHub step-summary) | not-found | 0 ok · 2 not found |
 
 - `--adapter` is a run-time choice (FEATURE-SPEC §2.4), **not** in the Contract. Default `browser-use`; also `http`, `noop`, `demo`.
 - Input validation: contract must `validate` clean before `run`; otherwise exit 2 without running.

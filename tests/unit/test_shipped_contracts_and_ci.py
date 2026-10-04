@@ -48,3 +48,52 @@ def test_ci_workflow_is_wellformed() -> None:
     assert "pytest" in run_cmds
     # integration runs against a postgres service in CI
     assert "postgres" in doc["jobs"]["test"]["services"]
+
+
+def test_github_action_is_wellformed() -> None:
+    # The reusable composite Action (FEATURE-SPEC §10) that gates a PR on the run verdict.
+    action = REPO / "action.yml"
+    assert action.exists(), "the composite GitHub Action must ship"
+    doc = yaml.safe_load(action.read_text())
+    assert doc["runs"]["using"] == "composite"
+    for inp in (
+        "contract",
+        "config",
+        "app",
+        "scenario",
+        "trials",
+        "sandbox",
+        "run-id",
+        "baseline",
+        "allow-fork",
+        "install",
+    ):
+        assert inp in doc["inputs"], f"Action must expose the {inp!r} input"
+    steps = doc["runs"]["steps"]
+    body = " ".join(s.get("run", "") for s in steps)
+    uses = " ".join(s.get("uses", "") for s in steps)
+    # cross-repo: self-installs from its own source when not importable (no registry/credential)
+    assert "GITHUB_ACTION_PATH" in body and "pip install" in body
+    assert "assertstate.cli" in body and "run" in body  # runs the trusted CLI, not the agent
+    assert "report" in body and "--format summary" in body  # redacted summary via the reporter
+    assert "compare" in body  # optional regression gate
+    assert "GITHUB_STEP_SUMMARY" in body  # posts a PR summary
+    assert "upload-artifact" in uses  # evidence uploaded as an artifact (§6)
+    assert "ASSERTSTATE_EXIT" in body  # exit code captured + re-exited (never collapsed)
+    # fork fail-closed: refuses a --config (secret) run from a fork unless explicitly allowed
+    assert "fork" in body.lower() and "exit 4" in body
+    # the gate + summary + artifact must run even on failure
+    assert any("always()" in str(s.get("if", "")) for s in steps)
+
+
+def test_example_workflow_is_wellformed() -> None:
+    wf = REPO / ".github" / "workflows" / "assertstate-example.yml"
+    assert wf.exists(), "the example consumer workflow must ship"
+    doc = yaml.safe_load(wf.read_text())
+    assert "assertstate" in doc["jobs"], "stable job name for the required status check"
+    assert doc["permissions"]["contents"] == "read"  # least privilege
+    steps = doc["jobs"]["assertstate"]["steps"]
+    assert any(s.get("uses") == "./" for s in steps)  # invokes the bundled Action
+    # the demo path references a REAL contract file
+    with_block = next((s.get("with", {}) for s in steps if s.get("uses") == "./"), {})
+    assert (REPO / with_block.get("contract", "nope")).exists()

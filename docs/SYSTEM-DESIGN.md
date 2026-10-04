@@ -121,7 +121,7 @@ Per-trial isolation (seed → run → reset). Pluggable strategies (§9). Owns t
 Assembles the redacted bundle (§11) with run provenance (§4) + scope statement + manifest hashes. Allowlist redaction runs here before anything is written.
 
 ### 3.13 Reporters
-JUnit, HTML, exit code — pure formatters over the Run record + artifact store (§13).
+JUnit, HTML, GitHub step-summary, exit code — pure formatters over the Run record + artifact store (§13). The GitHub Action (`action.yml`) is a thin integration layer over the CLI (run → `report --format summary` → upload evidence artifact → gate on the exit code); it never executes the agent or reinterprets the verdict.
 
 ---
 
@@ -322,7 +322,7 @@ assertstate/
   stats/         # wilson, completeness, regression
   env/           # isolation strategies, seeding, reset hooks
   evidence/      # redaction(fail-closed), bundler, manifest, provenance
-  reporters/     # junit, html, exit code, artifact store
+  reporters/     # junit, html, summary (GitHub step-summary), exit code, artifact store
   demo-app/      # disposable Postgres app + controllable async retry worker (first slice)
   contracts/     # example contracts (scenarios.md)
 ```
