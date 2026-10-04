@@ -115,8 +115,8 @@ statistics:                  # §8 — explicit, no magic defaults
 - `db_delta: { query, added_where?, changed_where?, removed_where?, max_added?, max_changed?, max_removed?, settle }` — **causal before/after diff** (for `forbid`); see §5. The primitive behind all side-effect checks.
 - `api: { request, jsonpath, <comparator>, eventually? }` — call API; extract; compare.
 - `http: { match, body_matches }` — network-trace predicate (§4.4).
-- Named side-effect shorthands (`duplicate`, `touch_other_tenant`, `external_*`) that **compile to `db_delta`/`http` predicates** (§5).
-- `ui: { selector, <comparator> }` — DOM fallback only (§4.6).
+- Named side-effect shorthands (`duplicate`, `touch_other_tenant`, `external_*`) that **compile to `db_delta`/`http` predicates** (§5). **Shipped** — the `db_delta` shorthands require a `settle:` block, take an optional `id_col` (the diff key, default `id`), and generate SQL through identifier/literal validation (no injection).
+- `ui: { selector, <comparator>, path?, render? }` — DOM fallback (§4.6). **Shipped:** read by a TRUSTED parent-side DOM probe (the parent obtains the app page itself — never the agent's browser, so INV-8 holds), with a **minimal selector subset** (`tag`/`#id`/`.class`/`tag#id`/`tag.class`). `render: html` (default, zero-dep) reads server-rendered HTML; `render: js` runs a headless Chrome so client-side JS executes (SPAs), using an isolated profile and failing closed to ERROR if no Chrome is present.
 
 ### 2.3 Typed comparators (exact semantics) `[P1]`
 `equals` (strict, type-sensitive) · `eq_canonical` (normalized via versioned `canon-v1`; domain-aware for amounts/IBANs/emails; `raw` mode available; the version is recorded in evidence) · `in:[…]` (canonical membership) · `lt/lte/gt/gte` (numeric; **fail-closed** on non-finite) · `regex` (fullmatch) · `absent:true` · `any` (presence-only).
@@ -178,6 +178,8 @@ Real systems write async (queue → worker → DB → read-replica). Without pol
 ### 4.6 UI/DOM assertion `[P2, fallback only]`
 For apps with no queryable backend. Never the primary signal — "DOM looks right" is the failure we exist to catch. _(Playwright/Momentic own DOM assertion.)_
 
+**Status: shipped.** `ui:` is read by a **trusted, agent-independent DOM probe** (`oracle/dom_probe`): the parent obtains the app page's DOM itself — never the agent's browser, so **INV-8** holds (the agent's self-report never decides the verdict). Two render modes: `render: html` (default, zero-dependency) does a read-only `GET` of the server-rendered HTML; `render: js` runs a headless Chrome (`--dump-dom`, isolated `--user-data-dir`, never the user's real profile) so client-side JavaScript executes and a **client-rendered SPA DOM** is captured — fail-closed to ERROR if no Chrome is found. Bounds: a minimal selector subset (`tag`/`#id`/`.class`/`tag#id`/`tag.class`); an element absent from the obtained DOM reads as "not present" (never a silent pass). Prefer `db`/`api` whenever the backend is queryable; `ui` is the fallback for apps with no queryable backend.
+
 ---
 
 ## 5. Feature area C — Side-effect / policy (core wedge)
@@ -216,7 +218,7 @@ forbid:
       max_added: 0
       settle: { mode: bounded, max_wait: 10s }
 ```
-Shorthand: `touch_other_tenant: { table: payments, tenant_col: tenant_id, tenant: acme }` → compiles to **both** the added and changed checks above. _(state-eval does a before/after SQL snapshot for API agents; Promptfoo BOLA is an adversarial probe, not a post-action settled delta.)_
+Shorthand (**shipped**): `touch_other_tenant: { table: payments, tenant_col: tenant_id, tenant: acme, settle, id_col?, where? }` → compiles to **both** the added and changed checks above. `settle` is required; `id_col` defaults to `id` (the diff key); the optional `where` scopes the projection — **without it the whole table is projected, which truncates → ERROR on non-small tables**. _(state-eval does a before/after SQL snapshot for API agents; Promptfoo BOLA is an adversarial probe, not a post-action settled delta.)_
 
 ### 5.2 Duplicate-on-retry `[P1]`
 ```yaml
@@ -226,7 +228,7 @@ forbid:
       max_added: 1                              # the run may add at most one payment
       settle: { mode: drain, queue: payments, timeout: 10s }   # drain workflow jobs, then snapshot
 ```
-Shorthand: `duplicate: { table: payments, key: invoice, value: bill-december, max_added: 1 }`. You must specify the natural/idempotency key — there is no universally derivable one. (Field name is `max_added` everywhere.) _(None of the 10 reviewed verify duplicate-on-retry as a settled causal delta.)_
+Shorthand (**shipped**): `duplicate: { table: payments, key: invoice, value: bill-december, max_added: 1, settle, id_col? }`. `settle` is required; `max_added` defaults to 1; `id_col` is the diff key (default `id`) since the diff key is not universally `id`. `key`/`value` scope the row (WHERE); the natural/idempotency key is not universally derivable, so you specify it. (Field name is `max_added` everywhere.) _(None of the 10 reviewed verify duplicate-on-retry as a settled causal delta.)_
 **Required fixture:** `max_added: 1` only constrains *this run's* additions — so the contract MUST pin the baseline (e.g. precondition: **0 payment rows for this idempotency key** before the run), or a run starting from 2 pre-existing rows would still pass. Every first-slice demo contract states its seed explicitly (§9.3).
 
 ### 5.2b `removed_where` example `[P1]`

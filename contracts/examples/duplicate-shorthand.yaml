@@ -1,0 +1,11 @@
+# Example: the `duplicate` shorthand (compiles to a db_delta) — at most one NEW payment per invoice.
+task: "Pay the invoice bill-december exactly once"
+app: demo
+forbid:
+  - duplicate:
+      table: payments
+      key: invoice
+      value: bill-december
+      max_added: 1
+      settle: { mode: drain, queue: payments, timeout: 10s }
+statistics: { trials: 5, pass_threshold: 0.8, min_valid_trials: 5, max_error_rate: 0.2 }

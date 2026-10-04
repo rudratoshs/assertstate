@@ -66,6 +66,23 @@ class ApiExpect:
 
 
 @dataclass(frozen=True)
+class UiExpect:
+    """expect.ui — a DOM fallback (FEATURE-SPEC §4.6, `[P2, fallback only]`).
+
+    Read by a TRUSTED, agent-independent DOM probe (the parent GETs the app page itself), so it
+    never reads the agent's browser and never violates INV-8. Bounded to server-rendered HTML +
+    a minimal CSS-selector subset (see oracle/dom_probe).
+    """
+
+    selector: str
+    comparator: Comparator
+    value: ComparatorValue
+    path: str = ""  # page path appended to the app base_url (default: the base page)
+    render: str = "html"  # "html" = server-rendered (zero-dep); "js" = headless Chrome (SPA)
+    eventually: Eventually | None = None
+
+
+@dataclass(frozen=True)
 class DbDeltaPolicy:
     """forbid.db_delta — a causal before/after diff (FEATURE-SPEC §5; DEVELOPMENT §16)."""
 
@@ -118,7 +135,7 @@ class ExternalPolicy:
     body_match: str | None = None  # data_transfer: a substring that, if sent, fires (best-effort)
 
 
-ExpectEntry = DbExpect | ApiExpect
+ExpectEntry = DbExpect | ApiExpect | UiExpect
 ForbidEntry = DbDeltaPolicy | HttpPolicy | ExternalPolicy
 
 

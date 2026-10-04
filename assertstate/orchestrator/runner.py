@@ -24,6 +24,7 @@ from assertstate.domain.contract import (
     DbExpect,
     ExternalPolicy,
     HttpPolicy,
+    UiExpect,
 )
 from assertstate.domain.result import Attribution, Outcome, SettlementRecord, TrialResult
 from assertstate.domain.snapshot import Snapshot
@@ -35,13 +36,18 @@ from assertstate.oracle.api_probe.probe import ApiProbe
 from assertstate.oracle.db_probe.probe import DbProbe, OracleError
 from assertstate.oracle.delta.engine import DeltaError, diff
 from assertstate.oracle.delta.predicate import PredicateError
+from assertstate.oracle.dom_probe.probe import DomProbe
 from assertstate.oracle.settlement.controller import SettlementController, SettlementError
 from assertstate.oracle.settlement.queue import QueueProbe
 from assertstate.oracle.snapshot.snapshot import SnapshotQuery, take_snapshot
 from assertstate.orchestrator.environment import Environment, TrialContext
 from assertstate.stats.aggregate import aggregate
 from assertstate.verifier.expect.comparators import ComparatorError
-from assertstate.verifier.expect.evaluator import evaluate_api_expect, evaluate_db_expect
+from assertstate.verifier.expect.evaluator import (
+    evaluate_api_expect,
+    evaluate_db_expect,
+    evaluate_ui_expect,
+)
 from assertstate.verifier.jsonpath import JsonPathError
 from assertstate.verifier.policy_engine.db_delta import evaluate_db_delta
 from assertstate.verifier.policy_engine.external import evaluate_external
@@ -113,6 +119,9 @@ def _verify(
             if api_probe is None:
                 raise OracleError("expect.api requires an api_base in the app config")
             r = evaluate_api_expect(api_probe, e)
+        elif isinstance(e, UiExpect):
+            base_url = str(ctx.browser_target.get("base_url", ""))
+            r = evaluate_ui_expect(DomProbe(base_url), e)  # trusted parent-side DOM read (§4.6)
         else:  # pragma: no cover - exhaustive
             raise OracleError(f"unknown expect entry {type(e).__name__}")
         # Safe-by-default fields (comparator/ok/present) identify the check and its outcome with

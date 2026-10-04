@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from assertstate.domain.comparator import Comparator
-from assertstate.domain.contract import ApiExpect, DbExpect
+from assertstate.domain.contract import ApiExpect, DbExpect, UiExpect
 from assertstate.oracle.api_probe.probe import ApiProbe
 from assertstate.oracle.db_probe.probe import DbProbe
+from assertstate.oracle.dom_probe.probe import DomProbe
 from assertstate.verifier.expect.comparators import compare
 from assertstate.verifier.jsonpath import extract
 
@@ -84,6 +85,35 @@ def _check_api_once(e: ApiExpect, probe: ApiProbe) -> ExpectResult:
     return ExpectResult(
         e.request, ok, True, observed, f"{observed!r} {e.comparator.value} {e.value!r}"
     )
+
+
+def _check_ui_once(e: UiExpect, probe: DomProbe) -> ExpectResult:
+    present, observed = probe.read(e.path, e.selector, e.render)  # OracleError -> ERROR upstream
+    label = f"ui:{e.selector}"
+    if e.comparator is Comparator.ABSENT:
+        ok = not present or observed is None
+        return ExpectResult(label, ok, present, observed, "absent" if ok else "present")
+    if e.comparator is Comparator.ANY:
+        return ExpectResult(label, present, present, observed, "present" if present else "missing")
+    if not present or observed is None:
+        return ExpectResult(label, False, present, observed, f"selector {e.selector} not found")
+    ok = compare(e.comparator, observed, e.value)
+    return ExpectResult(label, ok, True, observed, f"{observed!r} {e.comparator.value} {e.value!r}")
+
+
+def evaluate_ui_expect(probe: DomProbe, e: UiExpect) -> ExpectResult:
+    """Evaluate one expect.ui against the trusted DOM probe, with `eventually` polling."""
+    result = _check_ui_once(e, probe)
+    if result.ok or e.eventually is None:
+        return result
+    deadline = time.monotonic() + e.eventually.timeout_ms / 1000.0
+    poll_s = e.eventually.poll_ms / 1000.0
+    while time.monotonic() < deadline:
+        time.sleep(poll_s)
+        result = _check_ui_once(e, probe)
+        if result.ok:
+            return result
+    return result
 
 
 def evaluate_api_expect(probe: ApiProbe, e: ApiExpect) -> ExpectResult:
