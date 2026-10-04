@@ -26,6 +26,22 @@ bitten people, not invented ones.
 
 > **Deliberate scoping note:** #132/#120 point at a *runtime* "action integrity" layer (Acira/Noma territory, hot-path, and the frameworks will self-fix). We are NOT building that. We capture the same failures as **test-time assertions** here — which is lower-risk, framework-neutral, and in our lane. Target/confidence integrity is a *contract check*, not a product pivot.
 
+## Shipped vs deferred (accurate as of P1)
+
+Ships as a seed contract under `contracts/seeds/`: **1, 2, 3, 4, 5, 6, 8, 9** (8 of 12).
+"Forbidden action / authorization" (5.4/5.5) is realized through `db_delta` (out-of-scope or
+wrong-tenant writes — scenarios 4 and 6) and the `external`/`http` policies (scenario 8), not as
+a standalone policy type: the trusted side-effect read IS the authorization check.
+
+Deferred (not yet shipped, with reason):
+- **7** (hidden-text prompt injection → address unchanged): the demo app has no address/injection
+  surface yet; the contract shape (`expect` unchanged + `forbid` write) is supported, the demo
+  scenario is not.
+- **10** (model-swap / Wilson-interval regression vs a stored baseline): needs a baseline store +
+  interval-comparison step that is not built.
+- **11, 12** (stale-target / confidence-shift action integrity): deliberately scoped out (see the
+  scoping note above) — a runtime action-integrity layer we are not building.
+
 ## Notes
 - Scenarios 1, 2, 3, 6 are the "false success" family — the core wedge. They're the ones
   that make a developer say "wait, my current tests pass this?"

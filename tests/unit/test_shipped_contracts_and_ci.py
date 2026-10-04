@@ -12,9 +12,22 @@ from assertstate.contract.loader import load_and_validate
 REPO = Path(__file__).resolve().parents[2]
 CONTRACTS = sorted(REPO.glob("contracts/**/*.yaml"))
 
+# Seeds the P1 feature set supports (scenarios 7, 10-12 deferred; see scenarios.md).
+EXPECTED_SEEDS = {
+    "01-false-success",
+    "02-http-200-error",
+    "03-wrong-value",
+    "04-wrong-tenant",
+    "05-duplicate-on-retry",
+    "06-unrequested-action",
+    "08-external-exfil",
+    "09-budget",
+}
+
 
 def test_contracts_are_present() -> None:
-    assert len(CONTRACTS) >= 8, "expected the example + seed contracts to ship"
+    seeds = {p.stem for p in REPO.glob("contracts/seeds/*.yaml")}
+    assert seeds == EXPECTED_SEEDS, f"shipped seed set drifted from the documented 8: {seeds}"
 
 
 @pytest.mark.parametrize("path", CONTRACTS, ids=lambda p: p.name)

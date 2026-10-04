@@ -68,7 +68,15 @@ def _validate_db_delta(policy: DbDeltaPolicy, idx: int, report: ValidationReport
             policy.removed_where,
         ]
     )
-    if not has_pred:
+    has_cap = any(c is not None for c in (policy.max_added, policy.max_changed, policy.max_removed))
+    if not has_pred and not has_cap:
+        # A policy with no predicate AND no explicit cap polices nothing: it can never fire
+        # (a guaranteed PASS — the cardinal false-PASS sin). Reject it at load.
+        report.errors.append(
+            f"{where}: db_delta polices nothing (no *_where predicate and no max_* cap) — it can "
+            "never fire; add a predicate or an explicit cap (e.g. max_added: 0)"
+        )
+    elif not has_pred:
         report.warnings.append(
             f"{where}: no added_where/changed_where/removed_where — the policy only caps row counts"
         )

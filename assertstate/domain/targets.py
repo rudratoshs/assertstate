@@ -22,7 +22,7 @@ class OracleTarget:
     """TRUSTED. Read-only DB + (P1) read-only API. Never serialized to the child (INV-3)."""
 
     db_dsn_readonly: str
-    # --- P1, parsed but inert in P0 ---
+    # --- read-only API oracle (P1, shipped: GET/HEAD only via ApiProbe; expect.api live) ---
     api_base: str | None = None
     api_creds_readonly: str | None = None
     api_endpoint_allowlist: tuple[str, ...] = field(default_factory=tuple)

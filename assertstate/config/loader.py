@@ -22,7 +22,10 @@ from assertstate.config.model import (
     OracleConfig,
 )
 
-_VALID_STRATEGIES = {"shared", "reset_hook"}
+# shared => observed (db_delta non-gating). reset_hook / template_restore => causal, and each
+# requires a per-trial reset_cmd that re-establishes single-writer isolation (DEVELOPMENT §6, §20).
+_VALID_STRATEGIES = {"shared", "reset_hook", "template_restore"}
+_CAUSAL_STRATEGIES = {"reset_hook", "template_restore"}
 
 
 class ConfigError(Exception):
@@ -68,9 +71,13 @@ def _app(name: str, raw: dict[str, Any]) -> AppConfig:
         raise ConfigError(
             f"{where}.environment.strategy: unknown {strategy!r} ({_VALID_STRATEGIES})"
         )
-    if strategy == "reset_hook" and not env_raw.get("reset_cmd"):
-        raise ConfigError(f"{where}.environment: reset_hook strategy requires a reset_cmd")
-    environment = EnvironmentConfig(strategy=strategy, reset_cmd=env_raw.get("reset_cmd"))
+    reset_cmd = env_raw.get("reset_cmd") or env_raw.get("reset_hook")
+    if strategy in _CAUSAL_STRATEGIES and not reset_cmd:
+        raise ConfigError(
+            f"{where}.environment: {strategy} strategy requires a reset_cmd that restores "
+            "per-trial single-writer isolation (AssertState does not provision an external DB)"
+        )
+    environment = EnvironmentConfig(strategy=strategy, reset_cmd=reset_cmd)
 
     adapter_env = {
         k: _resolve(v, f"{where}.adapter_env.{k}")
@@ -93,14 +100,19 @@ def load_config(path: str | Path) -> AssertStateConfig:
     if not isinstance(raw, dict) or not isinstance(raw.get("apps"), dict) or not raw["apps"]:
         raise ConfigError("config: top level must have a non-empty `apps` mapping")
 
-    redaction_mode = str((raw.get("redaction") or {}).get("mode", "allowlist"))
+    redaction = raw.get("redaction") or {}
+    redaction_mode = str(redaction.get("mode", "allowlist"))
     if redaction_mode != "allowlist":
         raise ConfigError("redaction.mode must be 'allowlist' (fail-closed default)")
+    allow_raw = redaction.get("allow_fields", [])
+    if not isinstance(allow_raw, list) or not all(isinstance(x, str) for x in allow_raw):
+        raise ConfigError("redaction.allow_fields must be a list of field-name strings")
 
     apps = {name: _app(name, body or {}) for name, body in raw["apps"].items()}
     return AssertStateConfig(
         apps=apps,
         statistics_defaults=raw.get("statistics") or {},
         redaction_mode=redaction_mode,
+        redaction_allow_fields=tuple(allow_raw),
         canonicalizer=str(raw.get("canonicalizer", "canon-v1")),
     )

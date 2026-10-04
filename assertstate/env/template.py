@@ -8,9 +8,13 @@ programmatic probing uses psycopg (see oracle/db_probe).
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import getpass
 import os
 import subprocess
+import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -55,6 +59,33 @@ class TemplateError(RuntimeError):
     """Raised when the demo template/trial DB cannot be built or torn down."""
 
 
+@contextlib.contextmanager
+def _template_lock(cfg: ClusterConfig) -> Iterator[None]:
+    """Serialize ALL template operations across processes (cross-process hermeticity).
+
+    Two independent test runs share one template DB; without this, one process' DROP/CREATE
+    races another's, and CREATE ... TEMPLATE fails while a session is connected to the source.
+    A machine-wide file lock keyed on the template name makes build + every trial-create atomic.
+    """
+    lock_path = Path(tempfile.gettempdir()) / f"assertstate-template-{cfg.template_db}.lock"
+    with open(lock_path, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _terminate_connections(cfg: ClusterConfig, db: str) -> None:
+    _psql(
+        cfg,
+        cfg.maintenance_db,
+        "-c",
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        f"WHERE datname = '{db}' AND pid <> pg_backend_pid();",
+    )
+
+
 def _psql(cfg: ClusterConfig, db: str, *args: str) -> None:
     cmd = ["psql", "-v", "ON_ERROR_STOP=1", "-h", cfg.host, "-U", cfg.admin_user, "-d", db, *args]
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -73,31 +104,43 @@ def ensure_oracle_role(cfg: ClusterConfig) -> None:
 
 
 def build_template(cfg: ClusterConfig) -> None:
-    """(Re)build the demo template DB: drop, create, apply schema, apply grants."""
-    ensure_oracle_role(cfg)
-    _psql(cfg, cfg.maintenance_db, "-c", f'DROP DATABASE IF EXISTS "{cfg.template_db}";')
-    _psql(cfg, cfg.maintenance_db, "-c", f'CREATE DATABASE "{cfg.template_db}";')
-    _psql(cfg, cfg.template_db, "-f", str(SCHEMA_SQL))
-    _psql(
-        cfg,
-        cfg.template_db,
-        "-v",
-        f"db_name={cfg.template_db}",
-        "-v",
-        f"oracle_role={cfg.oracle_role}",
-        "-f",
-        str(GRANTS_SQL),
-    )
+    """(Re)build the demo template DB: drop, create, apply schema, apply grants.
+
+    Serialized machine-wide and terminates any session on the template before dropping it, so
+    concurrent test processes sharing the template cannot collide (hermeticity fix).
+    """
+    with _template_lock(cfg):
+        ensure_oracle_role(cfg)
+        _terminate_connections(cfg, cfg.template_db)  # else DROP/CREATE-TEMPLATE fails if connected
+        _psql(cfg, cfg.maintenance_db, "-c", f'DROP DATABASE IF EXISTS "{cfg.template_db}";')
+        _psql(cfg, cfg.maintenance_db, "-c", f'CREATE DATABASE "{cfg.template_db}";')
+        _psql(cfg, cfg.template_db, "-f", str(SCHEMA_SQL))
+        _psql(
+            cfg,
+            cfg.template_db,
+            "-v",
+            f"db_name={cfg.template_db}",
+            "-v",
+            f"oracle_role={cfg.oracle_role}",
+            "-f",
+            str(GRANTS_SQL),
+        )
 
 
 def create_trial_db(cfg: ClusterConfig, trial_db: str) -> None:
-    """Create a fresh per-trial DB from the template (DEVELOPMENT.md §20)."""
-    _psql(
-        cfg,
-        cfg.maintenance_db,
-        "-c",
-        f'CREATE DATABASE "{trial_db}" TEMPLATE "{cfg.template_db}";',
-    )
+    """Create a fresh per-trial DB from the template (DEVELOPMENT.md §20).
+
+    Holds the same machine-wide lock as build_template so a concurrent rebuild cannot drop the
+    template mid-copy, and CREATE ... TEMPLATE never races a connected source.
+    """
+    with _template_lock(cfg):
+        _terminate_connections(cfg, cfg.template_db)  # no lingering session on the copy source
+        _psql(
+            cfg,
+            cfg.maintenance_db,
+            "-c",
+            f'CREATE DATABASE "{trial_db}" TEMPLATE "{cfg.template_db}";',
+        )
 
 
 def drop_db(cfg: ClusterConfig, db: str) -> None:

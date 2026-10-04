@@ -24,15 +24,17 @@ Anything not fixed by (1)/(2) is labelled **`OPEN IMPLEMENTATION DECISION`** wit
 ## 1. Purpose and implementation scope
 - **What this is:** the P0 build blueprint. It inherits all behavior from FEATURE-SPEC v2.3 and all structure from SYSTEM-DESIGN v2.2.
 - **Frozen (do not reopen):** the trust model (real OS process boundary), the external-oracle verdict, deterministic scoring, the `db_delta` settlement contract, Wilson + completeness, fail-closed evidence, the phase boundaries.
-- **Deferred (do not build in P0):** BrowserObservations/network capture, CDP/proxy instrumentation, `bounded` settlement, HTTP policies, external-activity policies, API oracle, Stagehand/Playwright-MCP/JEV adapters, GitHub Action, HTML reporting, `run_correlated`, regression/model comparison, hosted infra, UI, users/orgs/roles.
+- **Originally P0-deferred; SINCE SHIPPED at P1** (code authoritative — FEATURE-SPEC §16): BrowserObservations/network capture, CDP/proxy instrumentation, `bounded` settlement, HTTP policies, external-activity policies, API oracle, GitHub Action, HTML reporting.
+- **Still deferred:** Stagehand/Playwright-MCP/JEV adapters, `run_correlated`, regression/model comparison, hosted infra, UI, users/orgs/roles.
 - **Definition of "P0":** "P0" here = the **first validation slice** (SYSTEM-DESIGN §19 / FEATURE-SPEC §16), the next implementation milestone. *(FEATURE-SPEC's `[P0 done]` phase tag refers only to the already-built contract loader + `validate`; everything else in this file's P0 is net-new.)*
 - **"Done" for P0:** see §37 — mechanically: every acceptance-matrix row (§35) and every adversarial test (§36) passes, with deterministic verdicts and redacted reproducible evidence.
 
 ### P0 scope (inclusive)
 Python core · Browser Use adapter (out-of-process) · Chromium · PostgreSQL · disposable isolated env via template/snapshot restore · declarative fixtures/seeding · read-only Postgres oracle · baseline + after Snapshot · PK/key validation · snapshot completeness guards · `db_delta` (`added_where`/`changed_where`/`removed_where`) · **`drain` settlement only** · deterministic Verifier · Wilson lower bound + completeness · PASS/FAIL/ERROR/SKIPPED (+ INCONCLUSIVE at Run level) · fail-closed JSON EvidenceBundle · provenance (RunMetadata) · local Artifact Store · CLI exit code.
 
-### P0 scope (excluded — attach later, §40)
-BrowserObservations/network capture · CDP/proxy · `bounded` settlement · HTTP policy · external policies · API oracle · other adapters · GitHub Action · HTML · `run_correlated` · hosted infra · UI · users/orgs/roles.
+### Scope beyond the original P0 slice
+Shipped at P1 (code authoritative): BrowserObservations/network capture · CDP/proxy · `bounded` settlement · HTTP policy · external policies · API oracle · GitHub Action · HTML.
+Still deferred (§40): other adapters · `run_correlated` · hosted infra · UI · users/orgs/roles.
 
 ---
 
@@ -45,7 +47,7 @@ BrowserObservations/network capture · CDP/proxy · `bounded` settlement · HTTP
 | Deterministic verdict evaluation | Verdict *evaluation* is deterministic over captured oracle observations (baseline, after Snapshots) + contract inputs — no randomness, no clock-dependence in the decision. Oracle *acquisition* and settlement may perform controlled I/O (reads, `eventually` polling, drain) **before** evaluation; that I/O produces the observations the pure evaluation consumes (§22, §23). |
 | No LLM in the verdict path | The `verifier/` package imports no model client. Enforced by a dependency test (§34). |
 | Trusted/untrusted boundary mechanically enforced | Adapter/agent/browser run in a separate OS process/container; only serialized values cross IPC (§4, §10). |
-| Oracle is observational only | DB uses a read-only role; a write attempt must raise (verified at config load, §13). |
+| Oracle is observational only | DB uses a read-only role; a write attempt must raise (verified at run setup / per-trial, §13). |
 | Incomplete evidence fails closed | Truncated/non-unique/timeout Snapshot → ERROR (§14); redaction failure → emit nothing (§28). |
 | Isolation is a correctness requirement | Fresh env per trial or the Wilson math is invalid (FEATURE-SPEC §9.3). Non-negotiable in P0. |
 | Settlement is part of correctness | After-snapshot only after a proven `drain` (§18); unprovable drain → ERROR. |
@@ -143,7 +145,7 @@ apps:
       creds_ref: "env:STAGING_BROWSER_LOGIN"   # reference, resolved trusted-side, redacted in evidence
     oracle:                        # → OracleTarget (TRUSTED, never to agent)
       db_dsn: "env:ORACLE_DSN"                  # must resolve to a READ-ONLY role
-      # api_base / api_creds_ref / api_endpoint_allowlist — P1 (parsed but inert in P0)
+      # api_base / api_creds_ref — P1, SHIPPED (read-only GET/HEAD API oracle; expect.api live)
     environment:
       strategy: template_restore               # P0 (§20)
       template_db: "assertstate_demo_template"
@@ -156,8 +158,8 @@ redaction:
   allow_fields: []
 canonicalizer: canon-v1
 ```
-- **Required:** `apps.<name>.browser.base_url`, `apps.<name>.oracle.db_dsn`, `apps.<name>.environment.strategy`.
-- **Validation at load:** resolve secret refs; **verify the oracle DB role is read-only** (attempt a write inside a savepoint, assert rejection — §13); assert `redaction.mode == allowlist` unless explicitly overridden; assert `environment.strategy` is a known P0 strategy.
+- **Required:** `apps.<name>.browser.base_url`, `apps.<name>.oracle.db_dsn`. `environment.strategy` is optional (defaults to `shared`).
+- **Validation at load:** resolve secret refs; assert `redaction.mode == allowlist` unless explicitly overridden; assert `environment.strategy` is a known strategy. **Read-only oracle verification happens at run setup (per-trial), not at config load** — config loading is deliberately DB-free; a writable oracle role fails closed to a trial ERROR via the role-privilege probe (§13).
 - **Persisted:** the resolved config *structure* (minus secrets) into RunMetadata. **Never persisted:** DSNs, credentials, secret values.
 - **Config error → CLI failure:** any load/validation error → exit non-zero with a precise message; never a partial run.
 
@@ -191,7 +193,7 @@ class DbExpect:            # expect.db — final-state read (§22)
 
 @dataclass(frozen=True)
 class SettlementConfig:    # §18 / FEATURE-SPEC §5
-    mode: str                          # "drain" (P0). "bounded"/"run_correlated" parsed, rejected-as-unsupported in P0.
+    mode: str                          # "drain" (P0) + "bounded" (P1, SHIPPED). "run_correlated" parsed, rejected-as-unsupported (P2).
     queue: str | None                  # drain: workflow-owned queue name
     timeout_s: float | None            # drain timeout → ERROR on expiry
 
@@ -247,10 +249,10 @@ P0 commands (FEATURE-SPEC §14). No `init`, no hosted/API commands.
 | Command | Args | stdout | stderr | Exit code |
 |---|---|---|---|---|
 | `assertstate validate <contract>` | contract path | validation summary (ok/errors) | parse/validation errors | 0 ok · 2 invalid |
-| `assertstate run <contract> [--adapter browser-use] [--app <name>] [--trials N] [--json]` | contract path + options | RunVerdict (human; JSON with `--json`) | run/infra errors | **0 = Run PASS · 1 = Run FAIL · 3 = INCONCLUSIVE · 4 = ERROR-dominated** |
+| `assertstate run <contract> [--adapter A] [--app <name>] [--config FILE] [--scenario S] [--sandbox auto\|container\|off] [--run-id ID] [--trials N] [--json]` | contract path + options | RunVerdict (human; JSON with `--json`) | run/infra errors | **0 = Run PASS · 1 = Run FAIL · 2 = usage/invalid · 3 = INCONCLUSIVE · 4 = ERROR-dominated** |
 | `assertstate report <run-id \| path>` | run id or `.assertstate/runs/<id>` | stored RunVerdict (human/JSON) | not-found | 0 ok · 2 not found |
 
-- `--adapter` is a run-time choice (FEATURE-SPEC §2.4), **not** in the Contract. P0 default/only: `browser-use`.
+- `--adapter` is a run-time choice (FEATURE-SPEC §2.4), **not** in the Contract. Default `browser-use`; also `http`, `noop`, `demo`.
 - Input validation: contract must `validate` clean before `run`; otherwise exit 2 without running.
 - Artifact location printed on completion: `.assertstate/runs/<run-id>/`.
 - `--json` emits the machine-readable RunVerdict to stdout; logs go to stderr (§32).
@@ -287,6 +289,7 @@ emit      → EvidenceBundle (redacted) + reporters + artifact store
 
 ## 10. Out-of-process adapter runner (`adapters/runner.py`) — critical
 Launches Browser Use in a child subprocess; this is where INV-1..INV-7 are enforced.
+- **Run-path engagement (DoD §37):** the CLI's real (`--config`) run path engages the container sandbox **by default** (`--sandbox auto`): container when Docker is reachable, else a bare subprocess with a **loud, evidence-recorded** warning (`env_image=subprocess-fallback`) — the weaker posture is never silent. `--sandbox container` refuses to run if Docker is absent; `--sandbox off` forces the subprocess. The strict `--network none` profile is the adversarial INV-7 proof and the posture for network-free adapters; a real networked agent uses `--network bridge` (host-FS/privilege isolation and the stripped oracle credential still hold, so the trusted oracle stays unreachable). The bundled demo (`--app demo`) is a **host-coupled in-process fixture** proving the verdict logic, not the sandbox.
 - **Sandbox (required for INV-2/INV-7, §4):** the child runs inside a **container** (recommended) — e.g. a minimal rootless container with: no bind-mount of the repo or `.assertstate/`, a private network (or egress limited to the app under test), a private PID/IPC namespace, a dedicated non-root UID, and no inherited file descriptors. **If a raw process is used instead of a container (P0 fallback),** the following OS primitives are *mandatory*, not optional: a **dedicated UID** with no read access to the trusted user's files or `.assertstate/`; **restrictive filesystem permissions** on all trusted paths; **no inherited file descriptors** (`close_fds=True`, pass only the one IPC fd); **private IPC/socket** reachable only via that fd (not a world-/user-readable path); and a **protected/hidden `/proc`** where feasible. *(OPEN IMPLEMENTATION DECISION §41: container vs. hardened-process for P0. The container is preferred because it makes tests 4–5 pass by construction; the hardened-process path must implement every primitive above or those tests cannot pass.)*
 - **Process lifecycle:** parent spawns the sandboxed child with an explicit, filtered `env`, writes the request, reads one response, joins with timeout, then force-terminates (and tears the sandbox down).
 - **Environment construction (secret filtering):** child env is built from an **allowlist** (e.g. `PATH`, Browser Use runtime vars, resolved `BROWSER_*` creds). **All `ORACLE_*`, DSNs, and AssertState trusted secrets are stripped.** Default-deny: unknown vars are not passed.
@@ -339,7 +342,7 @@ Implements OracleTarget's DB side (SYSTEM-DESIGN §3.7). Observational only.
 - **Statement timeout** (`SET statement_timeout`) → on timeout classify ERROR.
 - **Row/result limit** (cardinality cap) feeding Snapshot `row_count`/`truncated` (§14).
 - **Connection lifecycle:** short-lived per Snapshot; pooled within a trial if useful.
-- **Read-only verification (at config load) — role-privilege based, not transaction-mode based:** the proof is that the oracle **role lacks write privilege**, not that `default_transaction_read_only` is set (a session flag). **Do NOT use `CREATE TEMP TABLE` / temp-table writes** — PostgreSQL permits those inside a `READ ONLY` transaction, so they prove nothing. Instead attempt an `INSERT` into a **protected normal sentinel table** the oracle role has no grant on:
+- **Read-only verification (at run setup / per-trial) — role-privilege based, not transaction-mode based:** the proof is that the oracle **role lacks write privilege**, not that `default_transaction_read_only` is set (a session flag). **Do NOT use `CREATE TEMP TABLE` / temp-table writes** — PostgreSQL permits those inside a `READ ONLY` transaction, so they prove nothing. Instead attempt an `INSERT` into a **protected normal sentinel table** the oracle role has no grant on:
   ```sql
   BEGIN;
   SAVEPOINT ro_probe;
@@ -422,7 +425,7 @@ Carries SYSTEM-DESIGN §6.6:
 ---
 
 ## 18. P0 drain settlement (`oracle/settlement/`) — critical
-P0 implements **`drain` as the only correctness-valid settlement mode**. `bounded` is **not** implemented in P0 (its causal start-point needs trusted browser instrumentation, which P0 excludes — SYSTEM-DESIGN §6.3).
+The original P0 slice implemented **`drain` as the only correctness-valid settlement mode**. `bounded` **has since shipped at P1**: its causal start-point comes from the trusted parent-owned network capture (§3.8), which now exists; without that anchor `bounded` fails closed to ERROR (SYSTEM-DESIGN §6.3).
 
 ```python
 class SettlementController:
@@ -445,7 +448,7 @@ drain unverifiable (missing signal)     → ERROR
 drain timeout                           → ERROR
 drain partial evidence (some of a–d)    → ERROR
 ```
-Do **not** implement `bounded` in P0.
+`bounded` is implemented at P1 (shipped); the drain-only rule above was the original P0 slice.
 
 ---
 
@@ -638,7 +641,7 @@ adversarial/ the security/boundary suite (§36)
 - Configuration validation (read-only assertion path; redaction default allowlist).
 - Snapshot completeness (`truncated → ERROR`), PK uniqueness (`non-unique → ERROR`), snapshot consistency mode selection.
 - Delta classification (added/changed/removed) + predicate semantics (`added_where`/`changed_where{before,after}`/`removed_where`) + max-count thresholds.
-- Settlement state machine (drain success; unverifiable/timeout/partial → ERROR; `bounded` rejected in P0).
+- Settlement state machine (drain success; unverifiable/timeout/partial → ERROR; `bounded` success + fail-closed ERROR on a missing trusted anchor / unconfigured `max_wait`).
 - Outcome classification (the §24 truth table, incl. the four ERROR-not-FAIL cases).
 - Wilson calculation (exact values from FEATURE-SPEC §8.3) + completeness rules + `valid_trials==0 → INCONCLUSIVE`.
 - Redaction (allowlist; fail-closed → nothing emitted).
@@ -679,8 +682,8 @@ The **slow-retry** row is the one that specifically demonstrates why P0 `drain` 
 7. Malformed `AgentTrace` (missing/extra/typed-wrong keys) → **ERROR**.
 8. Oversized IPC response (> cap) → **discarded → ERROR**.
 9. Evidence redaction failure → **nothing emitted**; redaction-failure notice recorded.
-10. Oracle query attempting mutation → **rejected by read-only role**; config-load write-probe asserts it.
-11. API/oracle config attempting an unsafe method (P1 field present) → **rejected at load** (observational-by-contract; P0 keeps API oracle inert).
+10. Oracle query attempting mutation → **rejected by read-only role**; the run-setup (per-trial) role-privilege write-probe asserts it.
+11. API oracle restricted to safe methods — a non-GET/HEAD request → **rejected** (observational-by-contract; `ApiProbe._SAFE_METHODS`). Shipped at P1.
 12. Snapshot truncation bypass attempt (cap raised to hide a forbidden row via a narrow projection) → **`truncated`/projection warnings fire; truncated → ERROR**, and the projected-column warning (§17) is emitted.
 
 *(1–5 are the SYSTEM-DESIGN §10 "boundary proof test"; until they pass, the §2/§4 boundary is "designed," not "enforced.")*
@@ -736,8 +739,8 @@ For each step: prerequisites · modules · tests to add · completion condition.
 ---
 
 ## 39. Known limitations (honest; not bugs)
-- P0 is **drain-based**, not bounded-settlement.
-- P0 has **no network instrumentation** (no BrowserObservations) → no HTTP/external policies, no API oracle.
+- The original P0 slice was **drain-based**; `bounded` settlement shipped at P1.
+- The original P0 slice had **no network instrumentation**; P1 added trusted BrowserObservations → HTTP/external policies and the API oracle now ship.
 - P0 does **not** claim shared-staging causality (isolated env only).
 - **Budget:** only `max_seconds` is harness-trusted/gating in P0; `max_steps`/`max_cost_usd` are agent-reported → recorded as evidence, **non-gating** until P1 (§25).
 - No `run_correlated` mutation audit in P0.
@@ -761,7 +764,7 @@ P3  hosted platform (users/orgs/roles, REST control plane, physical schema, UI) 
 ## 41. SPEC MISMATCH / OPEN IMPLEMENTATION DECISION register
 Format: Decision · Options · Recommendation · Why · What would change it.
 
-**SPEC-MISMATCH-1 — `bound` vs `bounded` settlement mode name.** FEATURE-SPEC §5 wire value is `settle: { mode: bounded }`; SYSTEM-DESIGN §6.3 prose names the mode `bound`. · Options: (a) wire value `bounded` (FEATURE-SPEC), (b) `bound` (SYSTEM-DESIGN). · **Recommendation:** the **wire value is `bounded`** (FEATURE-SPEC is authoritative for contract semantics, rule 1); treat `bound` as the prose synonym. **Non-blocking for P0** (drain-only). · Why: the YAML a user writes is contract semantics. · Changes it: a source-doc edit aligning the two spellings — resolve before P1 implements `bounded`.
+**SPEC-MISMATCH-1 — `bound` vs `bounded` settlement mode name.** FEATURE-SPEC §5 wire value is `settle: { mode: bounded }`; SYSTEM-DESIGN §6.3 prose named the mode `bound`. · **Resolved (2026-10-04):** the wire value is **`bounded`** (FEATURE-SPEC is authoritative for contract semantics, rule 1); SYSTEM-DESIGN prose has been reconciled to `bounded` (only the dated v2.1 changelog line retains the old spelling as a historical record). Code uses `bounded` throughout.
 
 **SPEC-MISMATCH-2 — settlement evidence field names.** FEATURE-SPEC §5 records `settle_started_at/settle_completed_at/settle_policy`; SYSTEM-DESIGN §4 TrialResult uses `causal_start_at/started_at/completed_at/bound_or_drain_signal`. · **Recommendation:** use SYSTEM-DESIGN's TrialResult field names (authoritative for the data model) and note the FEATURE-SPEC names as evidence aliases. · Why: one data model, one set of names. · Changes it: a source-doc edit unifying them.
 
@@ -771,7 +774,7 @@ Format: Decision · Options · Recommendation · Why · What would change it.
 
 **OID-2 — IPC transport.** Options: stdin/stdout pipe · fd-passed unix socket. · **Recommendation:** pipe for P0, fd-passed socket for P1. · Why: least code that still enforces INV-4/INV-5 and keeps the endpoint off any user-readable path. · Changes it: a need for concurrency.
 
-**OID-5 — child sandbox mechanism (backs INV-2/INV-7, §10).** Options: (a) rootless container (no repo/`.assertstate` mount, private net/PID/IPC ns, dedicated UID, no inherited fds); (b) hardened raw process (dedicated UID + restrictive FS perms + `close_fds` + fd-only IPC + protected `/proc`). · **Recommendation:** container for P0 — it makes adversarial tests 4–5 pass by construction and is less error-prone than assembling the primitives by hand. · Why: INV-7 is a security claim; a bare subprocess does not back it. · Changes it: an environment where containers are unavailable → then the hardened-process primitives are *all* mandatory, or tests 4–5 cannot pass and the boundary is not "enforced."
+**OID-5 — child sandbox mechanism (backs INV-2/INV-7, §10).** Options: (a) rootless container (no repo/`.assertstate` mount, private net/PID/IPC ns, dedicated UID, no inherited fds); (b) hardened raw process (dedicated UID + restrictive FS perms + `close_fds` + fd-only IPC + protected `/proc`). · **Recommendation:** container for P0 — it makes adversarial tests 4–5 pass by construction and is less error-prone than assembling the primitives by hand. · Why: INV-7 is a security claim; a bare subprocess does not back it. · Changes it: an environment where containers are unavailable → then the hardened-process primitives are *all* mandatory, or tests 4–5 cannot pass and the boundary is not "enforced." · **Resolved (2026-10-04):** option (a) **Docker container**, implemented in `adapters/runner.py` (`mode="container"`) and engaged by the real run path via `--sandbox auto` (§10); the strict `--network none` variant backs adversarial tests 4–5, a `--network bridge` variant serves networked agents. Verified end-to-end for network-free adapters (the INV-7 suite runs real containers); the networked-agent image (Chrome) + egress policy is the remaining P1 hardening (`ASSERTSTATE_SANDBOX_IMAGE`), command-construction-tested here.
 
 **OID-3 — predicate evaluator for `*_where`.** Options: restricted comparator AST · SQL-side filtering. · **Recommendation:** restricted AST over row dicts (no `eval`). · Why: deterministic, safe, testable. · Changes it: predicate complexity beyond equality/inequality.
 
@@ -828,7 +831,7 @@ Success:
 - ✅ Every P0 component (§1 scope) exists in the repo plan (§3).
 - ✅ Every SYSTEM-DESIGN P0 component has an implementation module (orchestrator/oracle/verifier/stats/env/evidence/reporters/adapters).
 - ✅ Every FEATURE-SPEC first-slice acceptance requirement (§16) maps to a test row (§35).
-- ✅ No P0 step depends on a deferred P1 feature (instrumentation, API oracle, bounded settlement all excluded; drain-only).
+- ✅ The P0 core (oracle + `db_delta` + `drain` + isolation) stands on its own; P1 then added instrumentation, API oracle, and `bounded` settlement (all shipped) without changing the P0 verdict path.
 - ✅ No adapter receives OracleTarget (INV-3; §10, §11; tests §36.1–3).
 - ✅ INV-7 (artifact/socket unreachability) is backed by the §10 sandbox, not merely by "it's a subprocess" (tests §36.4–5); the honest scope of a plain subprocess is stated (§4).
 - ✅ No oracle probe mutates, and the read-only proof is **role-privilege based** (INSERT into a non-granted sentinel rejected) — not `CREATE TEMP TABLE`, which PostgreSQL allows in READ ONLY (§13, §19).

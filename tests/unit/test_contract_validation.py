@@ -77,6 +77,24 @@ def test_db_delta_requires_settle() -> None:
     assert "settle" in str(exc.value)
 
 
+def test_db_delta_that_polices_nothing_is_rejected() -> None:
+    # A db_delta with no *_where predicate AND no max_* cap can never fire (guaranteed PASS).
+    # It must be a load-time ERROR, not a warning (false-PASS prevention).
+    raw = _base(
+        forbid=[
+            {
+                "db_delta": {
+                    "query": "SELECT id FROM p",
+                    "settle": {"mode": "drain", "queue": "p", "timeout": "10s"},
+                }
+            }
+        ]
+    )
+    _, report = _load_dict(raw)
+    assert not report.ok
+    assert any("polices nothing" in e for e in report.errors)
+
+
 def test_changed_where_shorthand_and_mapping() -> None:
     raw = _base(
         forbid=[

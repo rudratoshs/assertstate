@@ -69,6 +69,39 @@ def test_reset_hook_requires_reset_cmd() -> None:
         load_config(_write(raw))
 
 
+def test_template_restore_is_a_known_strategy() -> None:
+    # DEVELOPMENT §6 names template_restore as the P0 strategy; it must load (causal + reset_cmd).
+    raw = _base()
+    raw["apps"]["staging"]["environment"] = {
+        "strategy": "template_restore",
+        "reset_cmd": "restore-db.sh",
+    }
+    app = load_config(_write(raw)).app("staging")
+    assert app.environment.strategy == "template_restore"
+    assert app.environment.reset_cmd == "restore-db.sh"
+
+
+def test_template_restore_requires_reset_cmd() -> None:
+    raw = _base()
+    raw["apps"]["staging"]["environment"] = {"strategy": "template_restore"}
+    with pytest.raises(ConfigError, match="reset_cmd"):
+        load_config(_write(raw))
+
+
+def test_unknown_strategy_rejected() -> None:
+    raw = _base()
+    raw["apps"]["staging"]["environment"] = {"strategy": "voodoo"}
+    with pytest.raises(ConfigError, match="unknown"):
+        load_config(_write(raw))
+
+
+def test_redaction_allow_fields_parsed() -> None:
+    raw = _base()
+    raw["redaction"] = {"mode": "allowlist", "allow_fields": ["notes", "build_id"]}
+    cfg = load_config(_write(raw))
+    assert cfg.redaction_allow_fields == ("notes", "build_id")
+
+
 def test_non_allowlist_redaction_rejected() -> None:
     raw = _base()
     raw["redaction"] = {"mode": "blocklist"}

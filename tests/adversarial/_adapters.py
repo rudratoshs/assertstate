@@ -76,8 +76,62 @@ class TimeoutAdapter:
         return AgentTrace(steps=(), agent_claimed_done=True)
 
 
+class SlowAdapter:
+    """Succeeds but burns wall time (browser_target['sleep_s']) to exceed a small max_seconds."""
+
+    def run(
+        self, task: str, browser_target: dict[str, Any], budget: dict[str, Any], run_id: str
+    ) -> AgentTrace:
+        time.sleep(float(browser_target.get("sleep_s", 1.0)))
+        return AgentTrace(steps=({"action": "slow"},), agent_claimed_done=True)
+
+
 class HonestAdapter:
     def run(
         self, task: str, browser_target: dict[str, Any], budget: dict[str, Any], run_id: str
     ) -> AgentTrace:
         return AgentTrace(steps=({"action": "noop"},), agent_claimed_done=True)
+
+
+class FsProbeAdapter:
+    """Tries to read a host path (passed via browser_target). In a container it is unreachable."""
+
+    def run(
+        self, task: str, browser_target: dict[str, Any], budget: dict[str, Any], run_id: str
+    ) -> AgentTrace:
+        path = browser_target.get("probe_path", "/nonexistent")
+        try:
+            data = open(path, encoding="utf-8").read(64)  # noqa: SIM115
+            reachable = True
+        except OSError as exc:
+            data = str(exc)
+            reachable = False
+        return AgentTrace(
+            steps=({"probe_path": path, "reachable": reachable, "detail": data[:80]},),
+            agent_claimed_done=True,
+        )
+
+
+class SocketProbeAdapter:
+    """Tries to connect to a trusted socket (host:port via browser_target); no network => fail."""
+
+    def run(
+        self, task: str, browser_target: dict[str, Any], budget: dict[str, Any], run_id: str
+    ) -> AgentTrace:
+        import socket
+
+        host = browser_target.get("probe_host", "127.0.0.1")
+        port = int(browser_target.get("probe_port", 0))
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                reachable = True
+                detail = "connected"
+        except OSError as exc:
+            reachable = False
+            detail = str(exc)
+        return AgentTrace(
+            steps=(
+                {"probe_hostport": f"{host}:{port}", "reachable": reachable, "detail": detail[:80]},
+            ),
+            agent_claimed_done=True,
+        )

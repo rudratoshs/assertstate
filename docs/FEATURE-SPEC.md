@@ -362,7 +362,7 @@ The CI path (PR → Action → agent → staging → authed API → DB) is an at
 ---
 
 ## 12. Feature area J — Cost / latency `[P1]`
-Per-run cost + wall-time capture; `budget.max_cost_usd`/`max_seconds`/`max_steps` → exceed = trial FAIL. _(Promptfoo has cost/latency assertions; none gate a browser-agent flow on a hard budget as a contract line.)_
+Per-run cost + wall-time capture. `budget.max_seconds` is harness-measured (parent wall-clock) and **GATES** — exceed = trial FAIL. `max_steps`/`max_cost_usd` are agent-reported, so they are recorded as **evidence only** and do not gate (gating on an agent-reported metric would violate INV-8); hard gating of those moves to P1 trusted RunMeasurements. _(Promptfoo has cost/latency assertions; none gate a browser-agent flow on a hard budget as a contract line.)_
 
 ---
 
@@ -392,8 +392,8 @@ Another browser agent / faster JEV · generic LLM eval & leaderboards (LangSmith
 > **Acceptance: the agent reports success; AssertState catches the real failure (missing/wrong/duplicate/cross-tenant-added-or-updated row, including one written by a slow retry), reproducibly over N trials with a reported interval — on a disposable demo app.**
 > **Deliberately excluded from the slice:** CDP/network capture and the 200-error / external-activity checks — they don't prove the DB-oracle thesis and add real engineering. The genuinely hardest part of the slice is **per-trial disposable-env reset + a causally-correct settled `db_delta`** (not Playwright absorption).
 
-**P1 (full MVP), after the slice proves out:** add **network capture (CDP)** + the 200-error / external-activity checks, API probe, typed-comparator set, GitHub Action + threat model, JUnit/HTML, eventual-consistency polling, the 12 seed contracts.
-**P2:** Stagehand/Playwright-MCP/JEV adapters, model-swap diffing, injection scenarios, richer evidence, sequential stopping.
+**P1 (full MVP), after the slice proves out:** add **network capture (CDP)** + the 200-error / external-activity checks, API probe, typed-comparator set, GitHub Action + threat model, JUnit/HTML, eventual-consistency polling, and the seed contracts that the P1 feature set supports (8 ship: scenarios 1–6, 8, 9).
+**P2:** Stagehand/Playwright-MCP/JEV adapters, model-swap diffing + Wilson-interval regression (scenario 10), injection scenarios (scenario 7), action-integrity scenarios (11–12), richer evidence, sequential stopping.
 **P3 (gated on WTP):** hosted runs, regression history, signed evidence reports, SSO/RBAC.
 
 ---

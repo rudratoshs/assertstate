@@ -19,6 +19,7 @@ def observations_from_capture(
             "completed_at": r.completed_at,
             "host": r.host,
             "resp_body": r.resp_body,
+            "req_body": r.req_body,
         }
         for r in capture.records()
     )

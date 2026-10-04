@@ -6,8 +6,14 @@ Spawns the untrusted adapter in a child subprocess and enforces the boundary mec
   - only {task, browser_target, execution_budget, run_id} go in                     [INV-5]
   - only {steps, agent_claimed_done} come back, validated strictly                  [INV-6]
   - malformed / oversized / crash / timeout -> AdapterError (-> trial ERROR)
-Scope: a subprocess + filtered env backs INV-3..6. Full filesystem/socket isolation
-(INV-7) is the P1 container hardening and is NOT claimed here.
+Scope: mode="subprocess" backs INV-3..6 via a filtered env. mode="container" adds INV-7
+(host-FS + privilege isolation: no host mount, non-root, --read-only, --cap-drop ALL) by running
+the child in a locked-down `docker run` container. The CLI's real (`--config`) run path engages
+the container by DEFAULT (`--sandbox auto`), with a recorded subprocess fallback only when Docker
+is unreachable; the strict `--network none` posture is the adversarial INV-7 proof (and the posture
+for network-free adapters), while a real networked agent uses `--network bridge` (the oracle stays
+unreachable because its credential is never passed). The bundled demo (`--app demo`) is a
+host-coupled in-process fixture that proves the verdict logic, not the sandbox.
 """
 
 from __future__ import annotations
@@ -41,6 +47,60 @@ def _child_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _container_image() -> str:
+    # Default image suits the no-LLM adapters (noop / http demo — stdlib only). A real browser
+    # agent needs an image carrying its runtime (e.g. Chrome); set ASSERTSTATE_SANDBOX_IMAGE.
+    return os.environ.get("ASSERTSTATE_SANDBOX_IMAGE", "python:3.11-slim")
+
+
+def _container_cmd(
+    adapter_spec: str, extra_env: dict[str, str] | None, *, network: str = "none"
+) -> list[str]:
+    """`docker run` the child in a locked-down container (INV-7).
+
+    Host filesystem isolation (no mount of .assertstate/secrets/host files), non-root, read-only
+    rootfs, all caps dropped, and the oracle DSN env-stripped hold in EVERY profile. `network`
+    selects the socket posture: "none" (the adversarial proof + network-free adapters — trusted
+    sockets provably unreachable) or e.g. "bridge" (a real networked agent that must reach the
+    app-under-test; the trusted oracle stays unreachable because its credential is never passed).
+    """
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "--network",
+        network,  # "none" = full socket isolation (INV-7 proof); "bridge" = networked agent
+        "--user",
+        "65534:65534",  # nobody
+        "--read-only",
+        "--tmpfs",
+        "/tmp",
+        "--cap-drop",
+        "ALL",
+        "-e",
+        "PYTHONPATH=/app",
+        "-e",
+        "PYTHONDONTWRITEBYTECODE=1",
+    ]
+    for k, v in (extra_env or {}).items():  # agent creds only (oracle-guard applied in _child_env)
+        if k.upper().startswith("ORACLE") or "oracle" in k.lower():
+            raise AdapterError(f"refusing to pass oracle-shaped credential {k!r} to the agent")
+        cmd += ["-e", f"{k}={v}"]
+    cmd += [
+        "-v",
+        f"{_REPO_ROOT / 'assertstate'}:/app/assertstate:ro",
+        "-v",
+        f"{_REPO_ROOT / 'tests'}:/app/tests:ro",  # for adversarial test adapters
+        _container_image(),
+        "python",
+        "-m",
+        "assertstate.adapters.child",
+        adapter_spec,
+    ]
+    return cmd
+
+
 def run_adapter(
     adapter_spec: str,
     *,
@@ -51,8 +111,17 @@ def run_adapter(
     timeout_s: float = 30.0,
     max_bytes: int = _DEFAULT_MAX_BYTES,
     extra_env: dict[str, str] | None = None,
+    mode: str = "subprocess",
+    container_network: str = "none",
 ) -> AgentTrace:
-    """Run `adapter_spec` ("module:attr") in a child process and return its AgentTrace."""
+    """Run `adapter_spec` ("module:attr") out-of-process and return its AgentTrace.
+
+    mode="subprocess" (default) backs INV-3/4/5/6 via env filtering. mode="container" adds INV-7
+    (host-FS/privilege isolation) by running the child in a locked-down container; container_network
+    selects its socket posture ("none" = full isolation / adversarial proof; "bridge" = a real
+    agent that must reach the app, with the trusted DB credential never passed so it stays
+    unreachable).
+    """
     request = json.dumps(
         {
             "task": task,
@@ -61,7 +130,14 @@ def run_adapter(
             "run_id": run_id,
         }
     )
-    cmd = [sys.executable, "-m", "assertstate.adapters.child", adapter_spec]
+    if mode == "container":
+        cmd = _container_cmd(adapter_spec, extra_env, network=container_network)
+        env = None  # docker provides the container env; -e flags carry agent creds
+        cwd = None
+    else:
+        cmd = [sys.executable, "-m", "assertstate.adapters.child", adapter_spec]
+        env = _child_env(extra_env)
+        cwd = str(_REPO_ROOT)
     try:
         proc = subprocess.run(
             cmd,
@@ -69,8 +145,8 @@ def run_adapter(
             capture_output=True,
             text=True,
             timeout=timeout_s,
-            env=_child_env(extra_env),
-            cwd=str(_REPO_ROOT),
+            env=env,
+            cwd=cwd,
         )
     except subprocess.TimeoutExpired as exc:
         raise AdapterError(f"adapter timed out after {timeout_s}s") from exc

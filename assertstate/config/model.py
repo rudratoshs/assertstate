@@ -44,6 +44,7 @@ class AssertStateConfig:
     apps: dict[str, AppConfig]
     statistics_defaults: dict[str, object] = field(default_factory=dict)
     redaction_mode: str = "allowlist"
+    redaction_allow_fields: tuple[str, ...] = ()  # operator widening of the evidence allowlist
     canonicalizer: str = "canon-v1"
 
     def app(self, name: str) -> AppConfig:

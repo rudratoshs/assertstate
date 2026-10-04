@@ -10,6 +10,7 @@ is recorded as evidence and never gates (INV-8). Any inability to establish corr
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -114,7 +115,18 @@ def _verify(
             r = evaluate_api_expect(api_probe, e)
         else:  # pragma: no cover - exhaustive
             raise OracleError(f"unknown expect entry {type(e).__name__}")
-        expect_results.append({"query": r.query, "ok": r.ok, "detail": r.detail})
+        # Safe-by-default fields (comparator/ok/present) identify the check and its outcome with
+        # no row data; query (WHERE-PII) and detail (raw observed value) are redacted unless the
+        # operator opts them in via redaction.allow_fields (FEATURE-SPEC §11 / DEVELOPMENT §28).
+        expect_results.append(
+            {
+                "comparator": e.comparator.value,
+                "ok": r.ok,
+                "present": r.present,
+                "query": r.query,
+                "detail": r.detail,
+            }
+        )
         expect_ok = expect_ok and r.ok
 
     policy_results: list[dict[str, Any]] = []
@@ -150,7 +162,13 @@ def _verify(
 
 
 def _run_trial(
-    contract: Contract, environment: Environment, adapter_spec: str, index: int
+    contract: Contract,
+    environment: Environment,
+    adapter_spec: str,
+    index: int,
+    *,
+    mode: str = "subprocess",
+    container_network: str = "none",
 ) -> TrialResult:
     ctx: TrialContext | None = None
     try:
@@ -171,6 +189,7 @@ def _run_trial(
 
         budget = contract.budget
         timeout_s = budget.max_seconds if budget and budget.max_seconds else 30.0
+        started_at = time.monotonic()
         trace: AgentTrace = run_adapter(
             adapter_spec,
             task=contract.task,
@@ -181,9 +200,24 @@ def _run_trial(
                 "max_seconds": budget.max_seconds if budget else None,
             },
             run_id=ctx.run_id,
+            # Kill margin > max_seconds so a natural over-run completes and FAILs (gating, below);
+            # only a hang past the margin is killed -> AdapterError -> ERROR.
             timeout_s=timeout_s + 10.0,
             extra_env=ctx.adapter_env or None,  # agent-side creds only; oracle DSN never here
+            mode=mode,
+            container_network=container_network,
         )
+        elapsed_s = time.monotonic() - started_at
+        # max_seconds is parent-measured wall time (trusted, INV-8-safe) -> it GATES.
+        budget_results: dict[str, Any] = {}
+        over_budget = False
+        if budget and budget.max_seconds is not None:
+            over_budget = elapsed_s > budget.max_seconds
+            budget_results = {
+                "max_seconds": budget.max_seconds,
+                "measured_seconds": round(elapsed_s, 3),
+                "over_budget": over_budget,
+            }
 
         settlement = _settle(contract, probe, ctx)
 
@@ -195,21 +229,36 @@ def _run_trial(
         outcome, reason, expect_results, policy_results = _verify(
             contract, baseline, after, probe, attribution, ctx
         )
+        # Budget over-run is a trusted, gating failure: a PASS on correctness still FAILs if the
+        # agent exceeded max_seconds (F4). ERROR outcomes are left as-is (correctness unknown).
+        if over_budget and outcome == Outcome.PASS:
+            outcome = Outcome.FAIL
+            ms = budget_results["measured_seconds"]
+            lim = budget_results["max_seconds"]
+            reason = f"budget exceeded: {ms}s > max_seconds={lim}; {reason}"
         return TrialResult(
             outcome=outcome,
             reason=reason,
             attribution=attribution,
             expect_results=tuple(expect_results),
             policy_results=tuple(policy_results),
+            budget_results=budget_results,
             settlement=settlement,
             refs={"agent_claimed_done": str(trace.agent_claimed_done)},  # recorded, NOT trusted
         )
+    # `reason` is an allowlisted evidence field, so it must not carry raw exception text derived
+    # from EXTERNAL data. SettlementError is a TRUSTED internal control signal whose message is
+    # harness-authored (run_id + integer queue state only), so it is safe to surface. AdapterError
+    # (wraps child stderr) and the oracle/verify group (wrap psycopg/DB text) can echo DSNs, SQL,
+    # row values or whatever the agent printed, so only their exception TYPE is recorded.
     except SettlementError as exc:
         return TrialResult(outcome=Outcome.ERROR, reason=f"settlement: {exc}")
     except AdapterError as exc:
-        return TrialResult(outcome=Outcome.ERROR, reason=f"adapter: {exc}")
+        return TrialResult(outcome=Outcome.ERROR, reason=f"adapter error ({type(exc).__name__})")
     except (OracleError, DeltaError, PredicateError, ComparatorError, JsonPathError) as exc:
-        return TrialResult(outcome=Outcome.ERROR, reason=f"{type(exc).__name__}: {exc}")
+        return TrialResult(
+            outcome=Outcome.ERROR, reason=f"verification error ({type(exc).__name__})"
+        )
     finally:
         if ctx is not None:
             environment.teardown(ctx)
@@ -221,8 +270,20 @@ def run_contract(
     adapter_spec: str,
     *,
     trials: int | None = None,
+    mode: str = "subprocess",
+    container_network: str = "none",
 ) -> RunOutput:
     n = trials if trials is not None else contract.statistics.trials
-    results = [_run_trial(contract, environment, adapter_spec, i) for i in range(n)]
+    results = [
+        _run_trial(
+            contract,
+            environment,
+            adapter_spec,
+            i,
+            mode=mode,
+            container_network=container_network,
+        )
+        for i in range(n)
+    ]
     verdict = aggregate(results, contract.statistics)
     return RunOutput(verdict=verdict, trials=results)

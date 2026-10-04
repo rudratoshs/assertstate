@@ -16,6 +16,7 @@ import psycopg
 from worker import DemoWorker  # type: ignore[import-not-found]
 
 from assertstate.env.template import ClusterConfig, build_template, create_trial_db, drop_db
+from assertstate.oracle.db_probe.probe import DbProbe
 from assertstate.orchestrator.environment import TrialContext
 
 
@@ -66,9 +67,13 @@ class DemoEnvironment:
             "invoice": self._invoice,
             "retry_delay_s": self._retry_delay_s,
         }
+        oracle_dsn = self._cfg.oracle_dsn(db)
+        # Assert the oracle role is READ-ONLY at runtime on the real run path (not just by
+        # construction) — fail-closed: a writable oracle raises OracleError -> trial ERROR (§13).
+        DbProbe(oracle_dsn).verify_read_only()
         return TrialContext(
             run_id=run_id,
-            oracle_dsn=self._cfg.oracle_dsn(db),  # read-only
+            oracle_dsn=oracle_dsn,  # read-only (verified above)
             browser_target=browser_target,
             db_name=db,
             handle=(worker, thread),

@@ -75,9 +75,11 @@ class DbDeltaPolicy:
     changed_where_before: str | None = None
     changed_where_after: str | None = None
     removed_where: str | None = None
-    max_added: int = 0
-    max_changed: int = 0
-    max_removed: int = 0
+    # None => that event-set is NOT policed (ignored). An explicit cap (including 0) or a
+    # *_where predicate makes it policed; 0 then means "zero allowed" (strictest), not "ignore".
+    max_added: int | None = None
+    max_changed: int | None = None
+    max_removed: int | None = None
     key: str | None = None  # natural/idempotency key when the PK is not the diff key
 
 

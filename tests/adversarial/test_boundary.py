@@ -73,3 +73,20 @@ def test_runner_never_has_oracle_in_its_own_contract() -> None:
 
     src = inspect.getsource(run_adapter)
     assert "oracle" not in src.lower()
+
+
+def test_inv1_child_not_imported_into_trusted_process() -> None:
+    # INV-1: the untrusted child module must run out-of-process, never be imported in-process.
+    # Importing the trusted runner/orchestrator must NOT pull `assertstate.adapters.child` in.
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys; import assertstate.orchestrator.runner; import assertstate.adapters.runner; "
+        "assert 'assertstate.adapters.child' not in sys.modules, "
+        "'child module was imported into the trusted process'"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(repo))
+    assert r.returncode == 0, r.stderr

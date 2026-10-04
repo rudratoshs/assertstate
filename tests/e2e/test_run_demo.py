@@ -8,6 +8,7 @@ Evidence is written. Skips if no local Postgres.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from assertstate.cli import main
 
 REPO = Path(__file__).resolve().parents[2]
 CONTRACT = str(REPO / "contracts" / "pay-invoice.e2e.yaml")
+_RUN_IDS = ("x1-fail", "x1-pass", "x1-redact")
 
 
 def _pg() -> bool:
@@ -27,6 +29,13 @@ def _pg() -> bool:
 
 
 pytestmark = pytest.mark.skipif(not _pg(), reason="no local Postgres reachable")
+
+
+@pytest.fixture(autouse=True)
+def _clean_run_dirs() -> None:
+    # write_run is no-overwrite (§30), so clear these fixed run-ids first to keep re-runs green.
+    for rid in _RUN_IDS:
+        shutil.rmtree(REPO / ".assertstate" / "runs" / rid, ignore_errors=True)
 
 
 def test_slow_retry_counterfactual_fails_through_run() -> None:
@@ -51,7 +60,8 @@ def test_evidence_redacts_app_credentials() -> None:
     main(["run", CONTRACT, "--app", "demo", "--scenario", "correct", "--run-id", "x1-redact"])
     trial = REPO / ".assertstate" / "runs" / "x1-redact" / "trials" / "trial-0000.json"
     blob = trial.read_text()
-    # The app-write DSN must never appear in evidence; the key is masked.
-    assert "postgres" not in blob.lower() or "***REDACTED***" in blob
+    # Non-vacuous: no DSN / connection URI may ever appear verbatim in evidence (hard claim).
+    for leak in ("postgres://", "postgresql://", "://", "dbname=", "password="):
+        assert leak not in blob.lower(), f"connection detail leaked into evidence: {leak!r}"
     data = json.loads(blob)
     assert data["outcome"] == "PASS"

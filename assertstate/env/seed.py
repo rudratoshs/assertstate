@@ -58,9 +58,11 @@ def verify_preconditions(
         first_row = res.rows[0]
         value = str(next(iter(first_row.values())))
         ok = pc.assert_equals is None or value == pc.assert_equals
-        out.append(
-            PreconditionResult(pc.description, ok, f"got {value!r} expected {pc.assert_equals!r}")
-        )
+        # Report the outcome STRUCTURALLY only. The observed value is a raw DB read and the
+        # trial `reason` that carries this detail is an allowlisted free-text field, so echoing
+        # `got {value!r}` here would leak row data into evidence by default (FEATURE-SPEC §11).
+        detail = "assertion established" if ok else "observed value did not match expectation"
+        out.append(PreconditionResult(pc.description, ok, detail))
     return out
 
 

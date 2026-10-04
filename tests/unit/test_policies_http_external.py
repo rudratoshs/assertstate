@@ -100,3 +100,19 @@ def test_external_data_transfer_body_match() -> None:
     miss = _rec("evil.com", url="http://evil.com/?d=benign")
     assert evaluate_external(p, _obs(hit), {"app"}).fired is True
     assert evaluate_external(p, _obs(miss), {"app"}).fired is False
+
+
+def test_external_data_transfer_matches_request_not_response() -> None:
+    # Exfil is OUTBOUND: a secret in the POST request body fires; the same string appearing only
+    # in the inbound RESPONSE must NOT fire (the wrong-direction defect the audit flagged).
+    p = ExternalPolicy(kind=EXT_DATA_TRANSFER, body_match="secret-token")
+    sent = _rec("evil.com", method="POST", url="http://evil.com/collect", req_body="x=secret-token")
+    echoed = _rec(
+        "evil.com",
+        method="POST",
+        url="http://evil.com/collect",
+        req_body="",
+        resp_body="secret-token",
+    )
+    assert evaluate_external(p, _obs(sent), {"app"}).fired is True, "request-body exfil must fire"
+    assert evaluate_external(p, _obs(echoed), {"app"}).fired is False, "response echo must not fire"

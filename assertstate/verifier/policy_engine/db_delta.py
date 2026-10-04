@@ -1,9 +1,9 @@
 """db_delta policy evaluation (FEATURE-SPEC §5; DEVELOPMENT.md §16, §23).
 
 Given a DbDeltaPolicy and the computed Delta, count matches per event-set and decide
-whether the policy fires (-> FAIL). An event-set is *policed* iff it has a predicate OR a
-non-zero max (so a count-only duplicate check polices `added` via max_added, while an
-unconstrained event-set is ignored). GATING only under causal attribution (DEVELOPMENT §6.5):
+whether the policy fires (-> FAIL). An event-set is *policed* iff it has a predicate OR an
+explicit cap (including 0 — "zero allowed"); an omitted (None) cap with no predicate leaves the
+event-set ignored. GATING only under causal attribution (DEVELOPMENT §6.5):
 on shared staging an observed delta is non-gating and can never FAIL.
 """
 
@@ -47,28 +47,35 @@ def _count_changed(policy: DbDeltaPolicy, delta: Delta) -> int:
 def evaluate_db_delta(
     policy: DbDeltaPolicy, delta: Delta, attribution: Attribution
 ) -> PolicyResult:
-    added_policed = policy.added_where is not None or policy.max_added != 0
+    # An event-set is policed iff it has a predicate OR an explicit cap (incl. 0). A cap of 0
+    # therefore means "zero allowed" (strictest), never "ignore" — the false-PASS footgun fixed.
+    added_policed = policy.added_where is not None or policy.max_added is not None
     changed_policed = (
         policy.changed_where_before is not None
         or policy.changed_where_after is not None
-        or policy.max_changed != 0
+        or policy.max_changed is not None
     )
-    removed_policed = policy.removed_where is not None or policy.max_removed != 0
+    removed_policed = policy.removed_where is not None or policy.max_removed is not None
 
-    added_hits = _count_added(policy, delta) if added_policed else 0
-    changed_hits = _count_changed(policy, delta) if changed_policed else 0
-    removed_hits = _count_removed(policy, delta) if removed_policed else 0
+    cap_added = policy.max_added if policy.max_added is not None else 0
+    cap_changed = policy.max_changed if policy.max_changed is not None else 0
+    cap_removed = policy.max_removed if policy.max_removed is not None else 0
+
+    # Count every event-set always so `detail` reports the true delta even when unpoliced.
+    added_hits = _count_added(policy, delta)
+    changed_hits = _count_changed(policy, delta)
+    removed_hits = _count_removed(policy, delta)
 
     fired = (
-        (added_policed and added_hits > policy.max_added)
-        or (changed_policed and changed_hits > policy.max_changed)
-        or (removed_policed and removed_hits > policy.max_removed)
+        (added_policed and added_hits > cap_added)
+        or (changed_policed and changed_hits > cap_changed)
+        or (removed_policed and removed_hits > cap_removed)
     )
     gating = attribution is Attribution.CAUSAL
     detail = (
-        f"added={added_hits}/max{policy.max_added} "
-        f"changed={changed_hits}/max{policy.max_changed} "
-        f"removed={removed_hits}/max{policy.max_removed} "
+        f"added={added_hits}/{('max' + str(cap_added)) if added_policed else 'unpoliced'} "
+        f"changed={changed_hits}/{('max' + str(cap_changed)) if changed_policed else 'unpoliced'} "
+        f"removed={removed_hits}/{('max' + str(cap_removed)) if removed_policed else 'unpoliced'} "
         f"fired={fired} gating={gating}"
     )
     return PolicyResult(kind="db_delta", fired=fired, gating=gating, detail=detail)

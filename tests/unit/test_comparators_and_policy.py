@@ -98,3 +98,22 @@ def test_observed_attribution_is_non_gating() -> None:
     p = _policy(max_added=1)
     r = evaluate_db_delta(p, _delta(added={1: {}, 2: {}}), Attribution.OBSERVED)
     assert r.fired is True and r.gating is False  # fired, but cannot gate on shared staging
+
+
+def test_max_added_zero_means_zero_allowed_not_ignored() -> None:
+    # Regression: an explicit max_added:0 with no predicate (seed-06 shape) MUST fire on any
+    # added row. Previously it was treated as unpoliced -> a guaranteed PASS (false-PASS blocker).
+    p = _policy(max_added=0)
+    fired = evaluate_db_delta(p, _delta(added={1: {}, 2: {}, 3: {}}), Attribution.CAUSAL)
+    assert fired.fired is True, "max_added:0 must police added (zero allowed), not ignore it"
+    assert "added=3/max0" in fired.detail
+    # zero added -> holds
+    assert evaluate_db_delta(p, _delta(added={}), Attribution.CAUSAL).fired is False
+
+
+def test_omitted_cap_leaves_eventset_unpoliced_in_detail() -> None:
+    # An omitted (None) cap with no predicate is still ignored, and detail says so honestly.
+    p = _policy(max_added=0)  # added policed; changed/removed omitted -> unpoliced
+    r = evaluate_db_delta(p, _delta(changed={1: ({"x": 1}, {"x": 2})}), Attribution.CAUSAL)
+    assert r.fired is False
+    assert "changed=1/unpoliced" in r.detail  # true count reported, but not gating

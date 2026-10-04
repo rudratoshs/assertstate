@@ -175,8 +175,8 @@ Across the 10 reviewed competitors, **no single product combines these five on o
 - N-trial runner + **Wilson lower-bound verdict**.
 - Budget caps (steps/cost/time).
 - Network capture (CDP/proxy) for side-effect checks.
-- Exit-code CI gate + **GitHub Action** + JUnit/HTML + **evidence bundle (zip)**.
-- Bundled demo app + 12 example contracts ([scenarios.md](scenarios.md)).
+- Exit-code CI gate + **GitHub Action** + JUnit/HTML + **redacted evidence bundle** (per-run directory: run.json, trials/, junit.xml, report.html, manifest.json).
+- Bundled demo app + 8 shipped example contracts (scenarios 1–6, 8, 9); scenarios 7 and 10–12 are deferred — see the ship/deferred breakdown in [scenarios.md](scenarios.md).
 
 **Phase 2 (reach):** Stagehand + Playwright MCP + JEV adapters; model-swap regression diffing; staging state-reset helpers; richer evidence/audit bundle for security reviews.
 

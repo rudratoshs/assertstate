@@ -32,11 +32,14 @@ class ConfiguredEnvironment:
         app = self._app
         run_id = f"{self._prefix}-{trial_index}-{uuid.uuid4().hex[:8]}"
 
-        if app.environment.strategy == "reset_hook" and app.environment.reset_cmd:
-            subprocess.run(shlex.split(app.environment.reset_cmd), check=True, timeout=120)
-            attribution = Attribution.CAUSAL  # each trial starts from a reset, single-writer
+        # reset_hook / template_restore both run a per-trial reset that re-establishes
+        # single-writer isolation -> causal. shared staging -> observed (db_delta non-gating, §6.5).
+        env = app.environment
+        if env.strategy in ("reset_hook", "template_restore") and env.reset_cmd:
+            subprocess.run(shlex.split(env.reset_cmd), check=True, timeout=120)
+            attribution = Attribution.CAUSAL
         else:
-            attribution = Attribution.OBSERVED  # shared staging — db_delta is non-gating (§6.5)
+            attribution = Attribution.OBSERVED
 
         # Fail closed: a writable oracle role raises OracleError -> the trial is ERROR.
         DbProbe(app.oracle.db_dsn).verify_read_only()

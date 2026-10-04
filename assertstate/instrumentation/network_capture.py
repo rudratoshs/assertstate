@@ -46,6 +46,7 @@ class RequestRecord:
     completed_at: float
     host: str = ""  # netloc of the request URL (for external-domain policies)
     resp_body: str = ""  # response body, capped (for http 200-with-error-body policy)
+    req_body: str = ""  # REQUEST body, capped (for external_data_transfer / exfil detection)
 
 
 class TrustedNetworkCapture:
@@ -128,6 +129,7 @@ class TrustedNetworkCapture:
                             completed_at=time.monotonic(),
                             host=urlparse(url).netloc,
                             resp_body=data[:_MAX_BODY].decode("utf-8", "replace"),
+                            req_body=(body or b"")[:_MAX_BODY].decode("utf-8", "replace"),
                         )
                     )
 

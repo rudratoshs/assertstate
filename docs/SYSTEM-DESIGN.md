@@ -18,11 +18,11 @@ Engineering design for the **core verification engine** specified in [FEATURE-SP
 **Goals:** correctness of the verdict above all (false PASS is the cardinal sin) · deterministic scoring (no LLM in pass/fail) · framework-neutral (agent is a swappable, out-of-process adapter) · statistically honest (Wilson + completeness) · security-grade (read-only oracle, hardened CI, fail-closed evidence) · small/swappable/solo-maintainable.
 
 **Hard constraints (from validation):**
-- Side-effect verdicts use **before/after causal deltas with a settlement guarantee** (`bound` | `drain` | `run_correlated`), never post-run counts.
+- Side-effect verdicts use **before/after causal deltas with a settlement guarantee** (`bounded` | `drain` | `run_correlated`), never post-run counts.
 - Causal attribution only under an **isolated environment**; shared staging = *observed delta*, labeled.
 - **Oracle credentials never reach the untrusted agent** — enforced by a real process/container boundary, not just logical separation (§2).
 - Oracle probes are **observational by contract** (read-only DB role; API via read-only service identity + endpoint allowlist, GET/HEAD as default restriction).
-- Settlement is correctness-valid only as **`drain` (P0)** / **`bound` with trusted causal timing (P1)** / **`run_correlated` (P2)**; an unprovable settlement is **ERROR, never FAIL**.
+- Settlement is correctness-valid only as **`drain` (P0)** / **`bounded` with trusted causal timing (P1, shipped)** / **`run_correlated` (P2)**; an unprovable settlement is **ERROR, never FAIL**.
 - A **truncated** snapshot can never produce PASS.
 
 **Non-goals:** browser engine, LLM eval/leaderboards, trace viewer/replay, red-team platform, runtime action-blocking (FEATURE-SPEC §15).
@@ -96,15 +96,20 @@ Given baseline + after snapshots + OracleTarget + BrowserObservations + contract
 ```
 Verifier
  ├── expect evaluator        # db/api final-state reads (+ eventually polling)
- ├── settlement controller   # bound | drain | run_correlated  (§6.3)
+ ├── settlement controller   # bounded | drain | run_correlated  (§6.3)
  └── Policy Engine (forbid)
       ├── db_delta            # settled before/after diff (§6)   [P1]
       ├── http                # 200-with-error-body etc.         [P1, needs BrowserObservations]
       ├── external_request / external_top_level_navigation / external_data_transfer  [P1]
-      ├── forbidden_action    # tool/action outside allowed set  [P1]
-      ├── authorization       # stayed in scope                  [P1]
+      ├── forbidden_action    # tool/action outside allowed set  [P1] *
+      ├── authorization       # stayed in scope                  [P1] *
       └── destructive_action  # approval observed before irreversible op  [P2]
 ```
+> \* `forbidden_action` / `authorization` are **semantics, not separate policy kinds**. They are
+> realized by `db_delta` (an out-of-scope or wrong-tenant write — seed contracts 06 and 04) and by
+> the `external`/`http` policies (a forbidden request — seed 08): a trusted read of the application's
+> own state IS the authorization check. There is no trace-based "forbidden action" gate, which would
+> violate INV-8 (the agent's self-reported actions never decide the verdict).
 
 ### 3.10 Statistics Engine
 TrialResults → RunVerdict: Wilson lower bound over valid trials + completeness; separate two-sample/paired comparison for regression/model-swap (§7).
@@ -183,8 +188,8 @@ load+validate · resolve OracleTarget+BrowserTarget · capture RunMetadata · fo
                   Browser Runner executes; BrowserObservations + RunMeasurements captured independently
                   returns AgentTrace (claimed_done recorded, ignored for verdict)
                   executor/infra failure → ERROR
-  5. SETTLE     settlement controller: P0 = drain (queue-state, needs no causal clock); P1+ = bound from
-                  last_causal_request_completed_at (needs trusted instrumentation); P2 = run_correlated.
+  5. SETTLE     settlement controller: drain (queue-state, needs no causal clock); bounded (P1, shipped)
+                  from last_causal_request_completed_at (needs trusted instrumentation); P2 = run_correlated.
                   settlement guarantee unprovable (drain unverifiable / bound source absent / timeout) → ERROR (not FAIL)
   6. AFTER      OracleTarget: after Snapshot (post-settlement; truncation/pk guards again)
   7. VERIFY     expect (reads + eventually) AND Policy Engine (delta/http/external/forbidden/authz) AND budget
@@ -212,10 +217,10 @@ Per `db_delta.query`, the result set keyed by the declared PK/`key:`, via the re
 ### 6.3 Settlement controller
 `diff` is only valid after causally-complete writes are observable. Each mode and the phase it is valid in:
 - **`drain`** (**P0, the only correctness-valid mode in the first slice**) — observes **queue/worker state directly**, so it needs no causal-start timestamp and therefore no browser instrumentation. Defined precisely: **(a) no queued workflow-owned jobs AND (b) no in-flight/active workflow-owned jobs AND (c) no producer can still enqueue work for this run AND (d) all downstream writes covered by the drain contract are observable.** An "empty queue" alone is insufficient.
-- **`bound`** (**P1+, needs trusted instrumentation**) — wait a documented `max_wait` that covers **app + worker + read-replica propagation**, **starting from the last causal browser-originated request completion** (`BrowserObservations.last_causal_request_completed_at`), NOT from "agent said DONE." Because that causal clock comes from trusted instrumentation (§3.8), `bound` is only correctness-valid once instrumentation is present — i.e. **not in P0** (resolving the P0 contradiction: P0 has no `last_causal_request_completed_at` source, so P0 uses `drain`). The bound guarantee is an environmental assumption recorded in evidence.
+- **`bounded`** (**P1, SHIPPED — needs trusted instrumentation**) — wait a documented `max_wait` that covers **app + worker + read-replica propagation**, **starting from the last causal browser-originated request completion** (`BrowserObservations.last_causal_request_completed_at`), NOT from "agent said DONE." Because that causal clock comes from trusted instrumentation (§3.8), `bounded` is only correctness-valid once instrumentation is present; the original P0 slice had no such source and used `drain`, and P1 added the trusted parent-owned capture that supplies it. Without the anchor, `bounded` fails closed to ERROR. The bound guarantee is an environmental assumption recorded in evidence.
 - **`run_correlated`** (P2+) — the long-term-correct design. Does NOT rely on a `run_id` column on new rows (that misses UPDATE/DELETE of pre-existing rows). Instead uses an **application mutation/audit record** `{mutation_id, run_id, table, pk, op(INSERT|UPDATE|DELETE), before, after, ts}`; the diff is computed from mutations tagged with this run, removing temporal inference. Requires app cooperation.
 - `poll_until_stable` — optional heuristic layered on the above, **never the sole guarantee**.
-- **Settlement failure is ERROR, never FAIL.** If the required guarantee cannot be established — drain cannot be verified, the `bound` causal-start source is absent, or settlement times out — the trial is **ERROR** ("could not establish correctness"), never FAIL. FAIL is reserved for "the workflow actually violated the contract."
+- **Settlement failure is ERROR, never FAIL.** If the required guarantee cannot be established — drain cannot be verified, the `bounded` causal-start source is absent, or settlement times out — the trial is **ERROR** ("could not establish correctness"), never FAIL. FAIL is reserved for "the workflow actually violated the contract."
 
 ### 6.4 Diff & predicates
 `diff(before, after)` by PK → added/changed/removed (§4). Predicate semantics (FEATURE-SPEC §5): `added_where` on the after-row; `changed_where: {before, after}` (string = after-only); `removed_where` on the before-row; each with `max_added`/`max_changed`/`max_removed` (default 0).
@@ -337,7 +342,7 @@ New adapter → implement `ExecutionAdapter` (gets `BrowserTarget` only). New or
 | Seed can't be established | SKIPPED | capped by `max_skip_rate` |
 | Oracle DB/API unreachable | ERROR | never a silent pass |
 | Snapshot truncated / PK not unique | ERROR | never PASS (§6.2) |
-| Async write after settlement | prevented | `bound`/`drain`/`run_correlated` (§6.3) |
+| Async write after settlement | prevented | `bounded`/`drain`/`run_correlated` (§6.3) |
 | Settlement guarantee unavailable (drain unverifiable / bound source absent / timeout) | ERROR | cannot establish correctness; never FAIL (§6.3) |
 | Forbidden column not in query projection | prevented at authoring | `db_delta` sees projected columns only; `validate` warns (§6.6) |
 | Concurrent writer (shared staging) | labeled | `attribution: observed` |
@@ -376,9 +381,9 @@ Orchestrator        Env Mgr     Adapter/Browser(UNTRUSTED)   Instrumentation   O
 
 ## 19. First-slice design (what gets built first)
 Minimal set to prove the thesis (FEATURE-SPEC §16): `contract`(done) + `orchestrator` (launching the untrusted agent **out-of-process**, §2) + `adapters/browser_use` + `oracle/{db_probe(ro), snapshot(+guards), delta, settlement(drain only)}` + `verifier/{expect, db_delta}` + `stats/{wilson, completeness, guards}` + `env/{postgres template-restore, seed}` + `evidence/{redact(fail-closed), json, provenance}` + artifact store + exit code.
-- **P0 uses `drain` as the only correctness-valid settlement mode** (it observes queue state and needs no causal clock). `bound` is deferred to P1 because its causal start-point requires trusted browser instrumentation — which is also excluded from P0. This removes the P0 settlement contradiction.
-- **Excluded from P0:** BrowserObservations/network capture (and therefore `bound`), http/external/forbidden/authz policies, API probe, other adapters, GitHub Action, HTML.
-- **Phasing:** **P0** proves oracle + `db_delta` + `drain` settlement + isolation. **P1** adds trusted instrumentation → `bound` + http/external policies. **P2** adds `run_correlated` + cross-version/cross-agent comparison.
+- **The original P0 slice used `drain` as the only correctness-valid settlement mode** (it observes queue state and needs no causal clock). `bounded` shipped at P1 once the trusted browser instrumentation that supplies its causal start-point was added; absent that anchor it fails closed to ERROR. This resolves the former P0 settlement contradiction.
+- **Deferred past the original P0 slice, SINCE SHIPPED at P1:** BrowserObservations/network capture (and therefore `bounded`), http/external policies, API oracle, GitHub Action, HTML. (`forbidden_action`/`authorization` are realized via `db_delta`+external/http, not separate kinds — §3.9.) **Still deferred:** other adapters (Stagehand/Playwright-MCP/JEV), `run_correlated`, cross-version/cross-agent comparison.
+- **Phasing:** **P0** proves oracle + `db_delta` + `drain` settlement + isolation. **P1 (shipped)** added trusted instrumentation → `bounded` + http/external policies + API oracle + container sandbox on the run path. **P2** adds `run_correlated` + cross-version/cross-agent comparison.
 - **Demo app:** tiny Postgres-backed payment workflow + a **controllable async retry worker** (so `drain` has a real, observable queue to settle against).
 - **Acceptance (functional):** inject wrong-value / missing / duplicate-on-slow-retry / cross-tenant-INSERT / cross-tenant-UPDATE failures → AssertState FAILs each (agent reports DONE), PASSes the correct run, reproducibly over N trials with a reported Wilson interval, `attribution: causal`. This is the empirical validation.
 - **Acceptance (security — the boundary proof test):** a malicious test adapter attempts to read `ORACLE_DSN`/oracle creds, the trusted artifact dir, the trusted IPC socket, the CDP/debug port, and trusted-process paths → **every attempt fails**. Until this passes, the §2 boundary is "designed," not "enforced."

@@ -65,6 +65,64 @@ def _print_verdict(verdict: Any, run_dir: object, as_json: bool) -> None:
         print(f"evidence: {run_dir}", file=sys.stderr)
 
 
+def _docker_available() -> bool:
+    import subprocess
+
+    try:
+        return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def _resolve_sandbox(choice: str) -> tuple[str, str, str]:
+    """Pick the adapter-execution sandbox for a real run (DoD §37: the boundary must be sandboxed).
+
+    Returns (mode, container_network, env_image_label). "container" isolates the host filesystem,
+    drops privileges and strips the oracle credential while letting the agent reach the app
+    (bridge network). "off" forces the bare subprocess. "auto" (default) uses the container when
+    Docker is reachable and otherwise falls back to the subprocess with a LOUD, recorded warning
+    so the weaker posture is never silent.
+    """
+    from assertstate.adapters.runner import _container_image
+
+    if choice == "off":
+        return "subprocess", "none", "subprocess"
+    if choice == "container":
+        if not _docker_available():
+            print(
+                "run: --sandbox container requested but Docker is not reachable; refusing to run "
+                "unsandboxed. Start Docker or use --sandbox off to accept subprocess isolation.",
+                file=sys.stderr,
+            )
+            raise SystemExit(4)
+        return "container", "bridge", f"container:{_container_image()}"
+    # auto
+    if _docker_available():
+        return "container", "bridge", f"container:{_container_image()}"
+    print(
+        "run: WARNING — Docker not reachable; adapter runs in a bare SUBPROCESS (INV-3..6 only, "
+        "NOT the INV-7 container sandbox). Recorded as env_image=subprocess-fallback.",
+        file=sys.stderr,
+    )
+    return "subprocess", "none", "subprocess-fallback"
+
+
+def _exit_code(verdict: Any) -> int:
+    """Map a RunVerdict to a CLI exit code (DEVELOPMENT §8): 0 PASS · 1 FAIL · 3 INCONCLUSIVE ·
+    4 INCONCLUSIVE because ERROR dominated (errors, not skips/low-N, are why it couldn't conclude).
+    """
+    from assertstate.domain.verdict import RunOutcome
+
+    if verdict.verdict is RunOutcome.PASS:
+        return 0
+    if verdict.verdict is RunOutcome.FAIL:
+        return 1
+    error_dominated = verdict.errored > 0 and verdict.errored >= max(
+        verdict.passed, verdict.failed, verdict.skipped
+    )
+    return 4 if error_dominated else 3
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     contract, report = load_and_validate(args.contract)
     for e in report.errors:
@@ -78,7 +136,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
         from assertstate.config.loader import ConfigError, load_config
         from assertstate.contract.loader import hash_contract
         from assertstate.domain.metadata import RunMetadata
-        from assertstate.domain.verdict import RunOutcome
         from assertstate.evidence.bundle import write_run
         from assertstate.orchestrator.runner import run_contract
 
@@ -91,20 +148,40 @@ def _cmd_run(args: argparse.Namespace) -> int:
         except (ConfigError, KeyError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+        mode, container_network, env_image = _resolve_sandbox(args.sandbox)
         cenv: object = ConfiguredEnvironment(app_cfg)
-        cout = run_contract(contract, cenv, _ADAPTERS[args.adapter], trials=args.trials)  # type: ignore[arg-type]
+        cout = run_contract(
+            contract,
+            cenv,  # type: ignore[arg-type]
+            _ADAPTERS[args.adapter],
+            trials=args.trials,
+            mode=mode,
+            container_network=container_network,
+        )
         cmeta = RunMetadata(
             run_id=args.run_id or f"{args.app}-run",
             assertstate_version=__version__,
             contract_hash=hash_contract(args.contract),
             scenario_id=args.scenario,
             adapter_name=args.adapter,
+            env_image=env_image,  # records whether the run was container-sandboxed (DoD §37)
         )
-        cdir = write_run(_REPO_ROOT / ".assertstate", cmeta.run_id, cout.verdict, cmeta)
+        from assertstate.evidence.bundle import EvidenceError
+
+        try:
+            cdir = write_run(
+                _REPO_ROOT / ".assertstate",
+                cmeta.run_id,
+                cout.verdict,
+                cmeta,
+                allow_fields=cfg.redaction_allow_fields,
+                contract_path=Path(args.contract),
+            )
+        except EvidenceError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         _print_verdict(cout.verdict, cdir, args.json)
-        return {RunOutcome.PASS: 0, RunOutcome.FAIL: 1, RunOutcome.INCONCLUSIVE: 3}[
-            cout.verdict.verdict
-        ]
+        return _exit_code(cout.verdict)
 
     if args.app not in ("demo", "bounded-demo"):
         print(
@@ -112,7 +189,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             "`--config assertstate.yaml --app <name>` for a real app.",
             file=sys.stderr,
         )
-        return 4
+        return 2  # usage error (invalid args), not an ERROR-dominated run (that is exit 4)
 
     # Built-in demo environments live under demo-app/ (needs it on sys.path).
     demo_dir = _REPO_ROOT / "demo-app"
@@ -121,7 +198,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     from assertstate.contract.loader import hash_contract
     from assertstate.domain.metadata import RunMetadata
-    from assertstate.domain.verdict import RunOutcome
     from assertstate.evidence.bundle import write_run
     from assertstate.orchestrator.runner import run_contract
 
@@ -155,9 +231,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
         },
         settlement_config={"mode": settle_mode},
     )
-    run_dir = write_run(_REPO_ROOT / ".assertstate", metadata.run_id, verdict, metadata)
+    from assertstate.evidence.bundle import EvidenceError
+
+    try:
+        run_dir = write_run(
+            _REPO_ROOT / ".assertstate",
+            metadata.run_id,
+            verdict,
+            metadata,
+            contract_path=Path(args.contract),
+        )
+    except EvidenceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     _print_verdict(verdict, run_dir, args.json)
-    return {RunOutcome.PASS: 0, RunOutcome.FAIL: 1, RunOutcome.INCONCLUSIVE: 3}[verdict.verdict]
+    return _exit_code(verdict)
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
@@ -204,6 +292,13 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--app", default=None)
     r.add_argument("--config", default=None, help="assertstate.yaml for a real app target")
     r.add_argument("--scenario", default="correct", help="demo app behavior (correct|slow_retry)")
+    r.add_argument(
+        "--sandbox",
+        choices=("auto", "container", "off"),
+        default="auto",
+        help="adapter-execution sandbox for a --config run: auto (container if Docker, else "
+        "subprocess+warning), container (require the INV-7 container), off (bare subprocess)",
+    )
     r.add_argument("--run-id", dest="run_id", default=None)
     r.add_argument("--trials", type=int, default=None)
     r.add_argument("--json", action="store_true")

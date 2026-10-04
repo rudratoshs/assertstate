@@ -156,9 +156,10 @@ def _parse_db_delta(entry: dict[str, Any], idx: int) -> DbDeltaPolicy:
         changed_where_before=cw_before,
         changed_where_after=cw_after,
         removed_where=body.get("removed_where"),
-        max_added=int(body.get("max_added", 0)),
-        max_changed=int(body.get("max_changed", 0)),
-        max_removed=int(body.get("max_removed", 0)),
+        # None when omitted (event-set not policed); an explicit value (incl. 0) makes it policed.
+        max_added=int(body["max_added"]) if "max_added" in body else None,
+        max_changed=int(body["max_changed"]) if "max_changed" in body else None,
+        max_removed=int(body["max_removed"]) if "max_removed" in body else None,
         key=body.get("key"),
     )
 
