@@ -107,6 +107,19 @@ def _resolve_sandbox(choice: str) -> tuple[str, str, str]:
     return "subprocess", "none", "subprocess-fallback"
 
 
+def _capture_addrs(mode: str) -> tuple[str, str]:
+    """(bind, advertise) for the trusted capture proxy given the adapter sandbox mode (§3).
+
+    subprocess: the agent runs on the host, so the proxy binds and is advertised on loopback.
+    container: the agent runs in a container, so the proxy binds on all interfaces (0.0.0.0) and
+    is advertised as `host.docker.internal` — the Docker host gateway the container routes to
+    (the runner adds `--add-host=host.docker.internal:host-gateway` so Linux resolves it too).
+    """
+    if mode == "container":
+        return "0.0.0.0", "host.docker.internal"
+    return "127.0.0.1", "127.0.0.1"
+
+
 def _exit_code(verdict: Any) -> int:
     """Map a RunVerdict to a CLI exit code (DEVELOPMENT §8): 0 PASS · 1 FAIL · 3 INCONCLUSIVE ·
     4 INCONCLUSIVE because ERROR dominated (errors, not skips/low-N, are why it couldn't conclude).
@@ -149,7 +162,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
         mode, container_network, env_image = _resolve_sandbox(args.sandbox)
-        cenv: object = ConfiguredEnvironment(app_cfg)
+        # Place the trusted capture proxy where the agent can reach the parent: on-host for a
+        # subprocess agent, or the Docker host gateway for a containerised one (§3).
+        cbind, cadv = _capture_addrs(mode)
+        cenv: object = ConfiguredEnvironment(app_cfg, capture_bind=cbind, capture_advertise=cadv)
         cout = run_contract(
             contract,
             cenv,  # type: ignore[arg-type]
@@ -334,6 +350,8 @@ apps:
     browser:
       base_url: "https://staging.example.com"
       creds_ref: "env:STAGING_BROWSER_LOGIN"   # resolved trusted-side, redacted in evidence
+      # capture: auto                           # auto (http:// only) | on | off — trusted network
+      #                                         # capture for http/external/trajectory policies (§3)
     oracle:
       db_dsn: "env:ORACLE_DSN"                  # MUST resolve to a READ-ONLY role
       # api_base: "https://staging.example.com/api"   # optional read-only API oracle (GET/HEAD)
@@ -382,6 +400,129 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_matrix(args: argparse.Namespace) -> int:
+    """Run a run/matrix manifest (FEATURE-SPEC §2.4): fan `contracts` × `targets` (adapters) over
+    one environment, write per-cell evidence, print a matrix, and exit on the WORST verdict code.
+    Adapter choice comes from the manifest's `targets`, never from inside a contract.
+    """
+    from assertstate.config.run_manifest import load_run_manifest, resolve_contracts
+    from assertstate.contract.errors import ContractError
+    from assertstate.contract.loader import hash_contract, load_and_validate
+    from assertstate.domain.metadata import RunMetadata
+    from assertstate.evidence.bundle import EvidenceError, write_run
+    from assertstate.orchestrator.runner import run_contract
+
+    try:
+        manifest = load_run_manifest(args.manifest)
+        contracts = resolve_contracts(manifest, _REPO_ROOT)
+    except ContractError as exc:
+        print(f"matrix: {exc}", file=sys.stderr)
+        return 2
+    unknown = [t for t in manifest.targets if t not in _ADAPTERS]
+    if unknown:
+        print(f"matrix: unknown target(s) {unknown} ({sorted(_ADAPTERS)})", file=sys.stderr)
+        return 2
+
+    # Build the environment once (same selection as `run`): --config real app, or built-in demo.
+    mode, container_network = "subprocess", "none"
+    if args.config:
+        from assertstate.config.environment import ConfiguredEnvironment
+        from assertstate.config.loader import ConfigError, load_config
+
+        mode, container_network, _ = _resolve_sandbox(args.sandbox)
+        cbind, cadv = _capture_addrs(mode)
+        try:
+            cfg = load_config(args.config)
+            env: object = ConfiguredEnvironment(
+                cfg.app(args.app or ""), capture_bind=cbind, capture_advertise=cadv
+            )
+        except (ConfigError, KeyError) as exc:
+            print(f"matrix: {exc}", file=sys.stderr)
+            return 2
+        allow_fields = cfg.redaction_allow_fields
+    elif args.app in ("demo", "bounded-demo"):
+        demo_dir = _REPO_ROOT / "demo-app"
+        if str(demo_dir) not in sys.path:
+            sys.path.insert(0, str(demo_dir))
+        if args.app == "bounded-demo":
+            from bounded_environment import BoundedDemoEnvironment
+
+            env = BoundedDemoEnvironment(buggy=(args.scenario in ("slow_retry", "buggy")))
+        else:
+            from environment import DemoEnvironment
+
+            env = DemoEnvironment(scenario=args.scenario)
+        allow_fields = ()
+    else:
+        print(
+            "matrix: use --config <file> --app <name>, or built-in --app demo|bounded-demo",
+            file=sys.stderr,
+        )
+        return 2
+
+    rows: list[tuple[str, str, Any, int]] = []
+    worst = 0
+    for contract_path in contracts:
+        contract, report = load_and_validate(contract_path)
+        for target in manifest.targets:
+            if contract is None:
+                print(f"matrix: {contract_path.name}: {report.errors}", file=sys.stderr)
+                rows.append((contract_path.name, target, None, 2))
+                worst = max(worst, 2)
+                continue
+            out = run_contract(
+                contract,
+                env,  # type: ignore[arg-type]
+                _ADAPTERS[target],
+                trials=args.trials,
+                mode=mode,
+                container_network=container_network,
+            )
+            run_id = f"{contract_path.stem}__{target}"
+            try:
+                write_run(
+                    _REPO_ROOT / ".assertstate",
+                    run_id,
+                    out.verdict,
+                    RunMetadata(
+                        run_id=run_id,
+                        assertstate_version=__version__,
+                        contract_hash=hash_contract(str(contract_path)),
+                        scenario_id=args.scenario,
+                        adapter_name=target,
+                    ),
+                    allow_fields=allow_fields,
+                    contract_path=contract_path,
+                )
+            except EvidenceError as exc:
+                print(f"matrix: {run_id}: {exc}", file=sys.stderr)
+            code = _exit_code(out.verdict)
+            worst = max(worst, code)
+            rows.append((contract_path.name, target, out.verdict, code))
+
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "contract": c,
+                        "target": t,
+                        "verdict": (v.verdict.value if v else "INVALID"),
+                        "exit": code,
+                    }
+                    for c, t, v, code in rows
+                ],
+                indent=2,
+            )
+        )
+    else:
+        print(f"{'contract':<28} {'target':<14} verdict")
+        for c, t, v, _code in rows:
+            print(f"{c:<28} {t:<14} {v.verdict.value if v else 'INVALID'}")
+        print(f"matrix: {len(rows)} cells, worst exit = {worst}")
+    return worst
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="assertstate", description="Deterministic acceptance harness.")
     p.add_argument("--version", action="version", version=f"assertstate {__version__}")
@@ -426,6 +567,16 @@ def build_parser() -> argparse.ArgumentParser:
     ini = sub.add_parser("init", help="scaffold a starter assertstate.yaml + example contract")
     ini.add_argument("--dir", default=".", help="target directory (default: current)")
     ini.set_defaults(func=_cmd_init)
+
+    mx = sub.add_parser("matrix", help="run a run/matrix manifest (contracts × adapter targets)")
+    mx.add_argument("manifest", help="assertstate.run.yaml (targets + contracts)")
+    mx.add_argument("--config", default=None, help="assertstate.yaml for a real app target")
+    mx.add_argument("--app", default=None, help="app name (config) or built-in demo|bounded-demo")
+    mx.add_argument("--scenario", default="correct")
+    mx.add_argument("--sandbox", choices=("auto", "container", "off"), default="auto")
+    mx.add_argument("--trials", type=int, default=None)
+    mx.add_argument("--json", action="store_true")
+    mx.set_defaults(func=_cmd_matrix)
     return p
 
 

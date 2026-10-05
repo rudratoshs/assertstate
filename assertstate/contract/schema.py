@@ -8,7 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
-TOP_LEVEL_KEYS = {"task", "app", "expect", "forbid", "budget", "statistics", "preconditions"}
+TOP_LEVEL_KEYS = {
+    "task",
+    "app",
+    "expect",
+    "forbid",
+    "budget",
+    "statistics",
+    "preconditions",
+    "trajectory",
+}
 
 
 def validate_schema(raw: Any) -> list[str]:
@@ -24,7 +33,7 @@ def validate_schema(raw: Any) -> list[str]:
     if unknown:
         errors.append(f"contract: unknown top-level keys {sorted(unknown)}")
 
-    for section in ("expect", "forbid", "preconditions"):
+    for section in ("expect", "forbid", "preconditions", "trajectory"):
         if section in raw and not isinstance(raw[section], list):
             errors.append(f"contract.{section}: must be a list")
 

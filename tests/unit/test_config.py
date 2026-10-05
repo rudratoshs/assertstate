@@ -34,7 +34,21 @@ def test_loads_minimal_config() -> None:
     assert app.oracle.db_dsn == "postgresql://ro@/app"
     assert app.browser.base_url == "https://staging.example.com"
     assert app.environment.strategy == "shared"  # => observed attribution
+    assert app.browser.capture == "auto"  # default
     assert cfg.redaction_mode == "allowlist"
+
+
+def test_capture_field_parsed() -> None:
+    raw = _base()
+    raw["apps"]["staging"]["browser"]["capture"] = "on"
+    assert load_config(_write(raw)).app("staging").browser.capture == "on"
+
+
+def test_capture_field_rejects_unknown() -> None:
+    raw = _base()
+    raw["apps"]["staging"]["browser"]["capture"] = "maybe"
+    with pytest.raises(ConfigError, match=r"capture: must be auto\|on\|off"):
+        load_config(_write(raw))
 
 
 def test_env_ref_resolution(monkeypatch: pytest.MonkeyPatch) -> None:

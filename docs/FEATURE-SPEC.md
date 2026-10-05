@@ -108,7 +108,11 @@ statistics:                  # §8 — explicit, no magic defaults
 ```
 
 ### 2.1 Top-level fields
-`task` (req), `app` (req), `expect` (≥1 recommended), `forbid` (optional), `budget` (optional), `statistics` (optional; defaults in §8). **No `agent` field** — see §2.4.
+`task` (req), `app` (req), `expect` (≥1 recommended), `forbid` (optional), `trajectory` (optional; §2.2), `budget` (optional), `statistics` (optional; defaults in §8). **No `agent` field** — see §2.4.
+
+**Reusable / templated (pre-process, §3 shipped):** two optional authoring keys resolve *before* schema validation and are consumed (they never reach the typed contract):
+- `include: [rel/path.yaml, …]` — merge each referenced pack's `forbid`/`expect` entries (included entries first, then the contract's own). Paths must be relative and resolve **under** the contract's directory (no absolute, no `..` escape); depth-capped; cycles rejected.
+- `params: {k: v}` + `${k}` placeholders in any string scalar — substituted into the contract (and into included packs); an undefined `${k}` is a hard `ContractError` (fail-closed). `hash_contract` hashes the **merged** result.
 
 ### 2.2 `expect` / `forbid` entry shapes
 - `db: { query, <comparator>, eventually? }` — post-run SELECT vs the read-only oracle; a **final-state** assertion (for `expect`); optional consistency polling.
@@ -117,6 +121,7 @@ statistics:                  # §8 — explicit, no magic defaults
 - `http: { match, body_matches }` — network-trace predicate (§4.4).
 - Named side-effect shorthands (`duplicate`, `touch_other_tenant`, `external_*`) that **compile to `db_delta`/`http` predicates** (§5). **Shipped** — the `db_delta` shorthands require a `settle:` block, take an optional `id_col` (the diff key, default `id`), and generate SQL through identifier/literal validation (no injection).
 - `ui: { selector, <comparator>, path?, render? }` — DOM fallback (§4.6). **Shipped:** read by a TRUSTED parent-side DOM probe (the parent obtains the app page itself — never the agent's browser, so INV-8 holds), with a **minimal selector subset** (`tag`/`#id`/`.class`/`tag#id`/`tag.class`). `render: html` (default, zero-dep) reads server-rendered HTML; `render: js` runs a headless Chrome so client-side JS executes (SPAs), using an isolated profile and failing closed to ERROR if no Chrome is present.
+- **Top-level `trajectory:`** (a list, not a `forbid` entry) — each `{require: [{method?, path_glob}, …], ordered?: true}` asserts a required ordering of browser-observable requests ("must call X before Y"). **Shipped `[P2, secondary]`** — evaluated over the trusted network capture only (never the agent trace, INV-8); gating only when a capture is present, else recorded non-gating; see §3 for the capture caveat.
 
 ### 2.3 Typed comparators (exact semantics) `[P1]`
 `equals` (strict, type-sensitive) · `eq_canonical` (normalized via versioned `canon-v1`; domain-aware for amounts/IBANs/emails; `raw` mode available; the version is recorded in evidence) · `in:[…]` (canonical membership) · `lt/lte/gt/gte` (numeric; **fail-closed** on non-finite) · `regex` (fullmatch) · `absent:true` · `any` (presence-only).
@@ -135,14 +140,16 @@ contracts: ["contracts/*.yaml"]
 ```
 _(Fixes the earlier contradiction where `agent: browser-use` lived inside a "framework-neutral" contract; `targets:` is run configuration, not part of the portable contract.)_
 
+**Shipped:** `assertstate matrix <assertstate.run.yaml> [--config FILE --app NAME | --app demo]` loads the manifest (`targets` + `contracts` globs — validated: unknown adapter or a glob matching nothing is a load error), fans every contract × every target adapter over one environment, writes a per-cell evidence bundle (`<contract-stem>__<target>`), prints a matrix, and **exits on the WORST verdict code** across cells (so one FAIL/INCONCLUSIVE/ERROR gates the whole matrix). Adapter choice comes only from `targets`/`--adapter`, never from inside a contract.
+
 ---
 
 ## 3. Feature area A — Contract / test definition
 - **Declarative YAML `[P0 done]`** — readable, diffable, version-controlled. _(ASSERT/Promptfoo/Momentic also declarative; none bind to live backend truth.)_
 - **Preconditions / fixtures `[P1]`** — seed state; if unestablishable, trial = `SKIPPED` (not FAIL).
 - **Postconditions `[P1]`** — the `expect` block.
-- **Path/trajectory conditions `[P2, secondary]`** — optional "must call X before Y." Deliberately secondary — outcome is the oracle. _(Relari/LangSmith lead here; not our fight.)_
-- **Reusable / templated `[P2]`** — includes, shared forbid-policy packs, per-tenant parameterization.
+- **Path/trajectory conditions `[P2, secondary]` — shipped.** Top-level `trajectory:` list, each `{require: [{method?, path_glob}, …], ordered?}` — "must call X before Y." Evaluated over the **trusted network capture** (`BrowserObservations`), **never** the agent's trace (INV-8), so it cannot be driven by the agent's self-report; `fired` when the required sequence is unmet. **Gating only when a trusted capture is attached** (`status=="captured"`) — recorded NON-GATING otherwise (never a silent pass, never a false FAIL). Deliberately secondary — outcome is the oracle, trajectory never replaces the db/api verdict. **Wiring:** the parent-owned capture proxy is started per-trial for **real `--config` apps** too (`ConfiguredEnvironment`), not just the bounded demo — enabled by default for plain-`http://` apps, routed to the agent as `browser_target.proxy` (loopback for a subprocess agent; `host.docker.internal` + `--add-host …:host-gateway` for a containerised one). HTTPS apps need TLS interception (a documented follow-up) → `capture: auto` leaves them off and the policy stays honestly non-gating; `capture: on`/`off` override. An agent that bypasses the attached proxy leaves the required request unobserved → FAIL (fail-closed). _(Relari/LangSmith lead here; not our fight.)_
+- **Reusable / templated `[P2]` — shipped.** `include: [rel/path.yaml, …]` merges each pack's `forbid`/`expect` (included entries first, then the contract's own); `params: {k: v}` + `${k}` placeholders substitute into any string scalar. Resolved in a pre-process pass (`contract/preprocess.py`) **before** schema/typed construction; `hash_contract` hashes the **merged** contract. Fail-closed safety: include paths must be relative and resolve **under** the contract's directory (no absolute, no `..` escape), depth-capped, cycles rejected; an undefined `${k}` is a hard `ContractError` (never a half-substituted query). See `contracts/examples/templated-trajectory.yaml`.
 
 ---
 

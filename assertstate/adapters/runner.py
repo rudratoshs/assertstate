@@ -71,6 +71,11 @@ def _container_cmd(
         "-i",
         "--network",
         network,  # "none" = full socket isolation (INV-7 proof); "bridge" = networked agent
+        # Let a networked agent reach the parent-owned trusted capture proxy on the host gateway
+        # (§3). Harmless under --network none (nothing is reachable) and on Docker Desktop (which
+        # already provides host.docker.internal); required for Linux bridge networking.
+        "--add-host",
+        "host.docker.internal:host-gateway",
         "--user",
         "65534:65534",  # nobody
         "--read-only",

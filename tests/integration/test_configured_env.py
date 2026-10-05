@@ -15,6 +15,7 @@ from assertstate.config.model import AppConfig, BrowserConfig, OracleConfig
 from assertstate.contract.loader import load_and_validate
 from assertstate.domain.result import Attribution, Outcome
 from assertstate.env.template import ClusterConfig
+from assertstate.instrumentation.network_capture import TrustedNetworkCapture
 from assertstate.orchestrator.runner import run_contract
 from tests.integration.conftest import admin_exec
 
@@ -22,11 +23,11 @@ CONTRACT = str(Path(__file__).resolve().parents[2] / "contracts" / "expect-only.
 NOOP = "assertstate.adapters.noop_adapter:NoopAdapter"
 
 
-def _app(dsn: str) -> AppConfig:
+def _app(dsn: str, base_url: str = "http://external.example", capture: str = "auto") -> AppConfig:
     return AppConfig(
         name="external",
         oracle=OracleConfig(db_dsn=dsn),
-        browser=BrowserConfig(base_url="http://external.example"),
+        browser=BrowserConfig(base_url=base_url, capture=capture),
     )
 
 
@@ -58,6 +59,33 @@ def test_config_run_fails_when_state_wrong(trial_db: tuple[ClusterConfig, str]) 
     assert contract is not None
     out = run_contract(contract, ConfiguredEnvironment(_app(cfg.oracle_dsn(db))), NOOP, trials=1)
     assert out.trials[0].outcome is Outcome.FAIL
+
+
+def test_config_setup_wires_trusted_capture_for_http(trial_db: tuple[ClusterConfig, str]) -> None:
+    # Gap fix (§3): a real http:// --config app now gets a parent-owned capture proxy, so
+    # http/external/trajectory policies gate (were silently non-gating before).
+    cfg, db = trial_db
+    _seed(cfg, db, "paid")
+    env = ConfiguredEnvironment(_app(cfg.oracle_dsn(db)))
+    ctx = env.setup(0)
+    try:
+        assert isinstance(ctx.capture, TrustedNetworkCapture)
+        assert ctx.browser_target.get("proxy", "").startswith("http://127.0.0.1:")
+    finally:
+        env.teardown(ctx)  # must stop the proxy
+
+
+def test_config_setup_no_capture_for_https(trial_db: tuple[ClusterConfig, str]) -> None:
+    # HTTPS needs TLS interception (follow-up) -> capture off, policies honestly non-gating.
+    cfg, db = trial_db
+    _seed(cfg, db, "paid")
+    env = ConfiguredEnvironment(_app(cfg.oracle_dsn(db), base_url="https://external.example"))
+    ctx = env.setup(0)
+    try:
+        assert ctx.capture is None
+        assert "proxy" not in ctx.browser_target
+    finally:
+        env.teardown(ctx)
 
 
 def test_config_run_errors_on_writable_dsn(trial_db: tuple[ClusterConfig, str]) -> None:

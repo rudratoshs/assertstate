@@ -23,6 +23,12 @@ from urllib.parse import urlparse
 
 _MAX_BODY = 64 * 1024  # cap captured response bodies (evidence stays bounded)
 
+
+def proxy_url(host: str, port: int) -> str:
+    """The proxy address the agent is told to use, from the host it can reach the parent on."""
+    return f"http://{host}:{port}"
+
+
 _HOP_BY_HOP = {
     "proxy-connection",
     "connection",
@@ -57,6 +63,7 @@ class TrustedNetworkCapture:
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self.port: int | None = None  # set on start()
 
     # --- trusted-side read API (the agent never gets this object) ---
     def records(self) -> list[RequestRecord]:
@@ -77,8 +84,14 @@ class TrustedNetworkCapture:
             self._records.append(rec)  # append-only
 
     # --- lifecycle ---
-    def start(self) -> str:
-        """Start the proxy; return the address to route the browser through."""
+    def start(self, bind_host: str = "127.0.0.1") -> str:
+        """Start the proxy; return the loopback address to route the browser through.
+
+        `bind_host` is the interface the proxy LISTENS on: "127.0.0.1" (default) when the agent
+        runs on the host (subprocess mode), or "0.0.0.0" so a containerised agent can reach it via
+        the Docker host gateway (`host.docker.internal`). The returned URL always advertises
+        127.0.0.1; a container caller rewrites the host via `proxy_url(advertise_host, port)`.
+        """
         capture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -145,11 +158,11 @@ class TrustedNetworkCapture:
                 )
                 self.send_error(501, "HTTPS capture not supported in this slice")
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server = ThreadingHTTPServer((bind_host, 0), Handler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
-        port = self._server.server_address[1]  # we bound to 127.0.0.1 above
-        return f"http://127.0.0.1:{port}"
+        self.port = self._server.server_address[1]
+        return f"http://127.0.0.1:{self.port}"
 
     def stop(self) -> None:
         if self._server is not None:

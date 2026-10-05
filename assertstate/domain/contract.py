@@ -135,6 +135,19 @@ class ExternalPolicy:
     body_match: str | None = None  # data_transfer: a substring that, if sent, fires (best-effort)
 
 
+@dataclass(frozen=True)
+class TrajectoryCheck:
+    """A required ordering of browser-observable requests (FEATURE-SPEC §3, `[P2, secondary]`).
+
+    "Must call X before Y." Evaluated over the TRUSTED network capture (BrowserObservations),
+    NEVER the agent's trace (INV-8), and gating ONLY when a trusted capture is present. Secondary:
+    it never replaces the db/api oracle verdict.
+    """
+
+    steps: tuple[HttpMatch, ...]  # each a method?/path_glob matcher (status ignored here)
+    ordered: bool = True  # True: each step must occur after the prior completes; False: all occur
+
+
 ExpectEntry = DbExpect | ApiExpect | UiExpect
 ForbidEntry = DbDeltaPolicy | HttpPolicy | ExternalPolicy
 
@@ -166,7 +179,8 @@ class Contract:
     task: str
     app: str
     statistics: StatisticsConfig
-    expect: tuple[ExpectEntry, ...] = field(default_factory=tuple)  # db (P0) | api (P1)
+    expect: tuple[ExpectEntry, ...] = field(default_factory=tuple)  # db (P0) | api (P1) | ui (P2)
     forbid: tuple[ForbidEntry, ...] = field(default_factory=tuple)  # db_delta | http | external
     budget: ExecutionBudget | None = None
     preconditions: tuple[Precondition, ...] = field(default_factory=tuple)
+    trajectory: tuple[TrajectoryCheck, ...] = field(default_factory=tuple)  # P2, trusted-net only

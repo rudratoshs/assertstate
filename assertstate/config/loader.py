@@ -63,7 +63,10 @@ def _app(name: str, raw: dict[str, Any]) -> AppConfig:
     )
     b = raw["browser"]
     creds = _resolve(b["creds_ref"], f"{where}.browser.creds_ref") if "creds_ref" in b else None
-    browser = BrowserConfig(base_url=str(b["base_url"]), creds=creds)
+    capture = str(b.get("capture", "auto"))
+    if capture not in ("auto", "on", "off"):
+        raise ConfigError(f"{where}.browser.capture: must be auto|on|off, got {capture!r}")
+    browser = BrowserConfig(base_url=str(b["base_url"]), creds=creds, capture=capture)
 
     env_raw = raw.get("environment", {}) or {}
     strategy = str(env_raw.get("strategy", "shared"))

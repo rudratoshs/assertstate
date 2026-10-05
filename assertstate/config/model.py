@@ -21,6 +21,11 @@ class OracleConfig:
 class BrowserConfig:
     base_url: str
     creds: str | None = None  # agent-visible; resolved from creds_ref
+    # Trusted network capture for http/external/trajectory policies (§3). "auto" (default): on when
+    # base_url is plain http:// (capturable without TLS interception), off for https://. "on" forces
+    # it (once TLS interception lands, or for an http app behind a scheme-ambiguous url); "off"
+    # disables it (those observation-based policies then run NON-GATING, never a false FAIL).
+    capture: str = "auto"
 
 
 @dataclass(frozen=True)

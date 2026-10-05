@@ -52,6 +52,7 @@ from assertstate.verifier.jsonpath import JsonPathError
 from assertstate.verifier.policy_engine.db_delta import evaluate_db_delta
 from assertstate.verifier.policy_engine.external import evaluate_external
 from assertstate.verifier.policy_engine.http import evaluate_http
+from assertstate.verifier.policy_engine.sequence import evaluate_trajectory
 
 
 @dataclass
@@ -157,6 +158,16 @@ def _verify(
             {"kind": pr.kind, "fired": pr.fired, "gating": pr.gating, "detail": pr.detail}
         )
         if pr.fired and pr.gating:  # observed/uncaptured policies are non-gating (§6.5)
+            gating_fired = True
+
+    # Trajectory checks (FEATURE-SPEC §3, P2): over the TRUSTED network capture only, gating only
+    # when captured — never the agent trace (INV-8). Secondary to the oracle verdict.
+    for tcheck in contract.trajectory:
+        tr = evaluate_trajectory(tcheck, observations)
+        policy_results.append(
+            {"kind": tr.kind, "fired": tr.fired, "gating": tr.gating, "detail": tr.detail}
+        )
+        if tr.fired and tr.gating:
             gating_fired = True
 
     if not expect_ok or gating_fired:

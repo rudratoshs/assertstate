@@ -26,6 +26,7 @@ class BrowserUseAdapter:
         run_id: str,
     ) -> AgentTrace:
         base_url = browser_target["base_url"]
+        proxy = browser_target.get("proxy")  # trusted parent-owned capture proxy (§3), if any
         model = os.environ.get("ASSERTSTATE_LLM_MODEL", "gpt-4o-mini")
         max_steps = int(execution_budget.get("max_steps") or 12)
 
@@ -33,19 +34,24 @@ class BrowserUseAdapter:
             f"{task} Go to {base_url} and pay the invoice shown by clicking the "
             f"'Pay invoice' button. When you see a payment-successful confirmation, you are done."
         )
-        claimed_done, steps = asyncio.run(self._drive(full_task, base_url, model, max_steps))
+        claimed_done, steps = asyncio.run(self._drive(full_task, base_url, model, max_steps, proxy))
         return AgentTrace(steps=tuple(steps), agent_claimed_done=claimed_done)
 
     async def _drive(
-        self, task: str, base_url: str, model: str, max_steps: int
+        self, task: str, base_url: str, model: str, max_steps: int, proxy: str | None
     ) -> tuple[bool, list[dict[str, Any]]]:
         from browser_use import Agent, BrowserProfile, ChatOpenAI
 
         headful = os.environ.get("ASSERTSTATE_BROWSER_HEADFUL") == "1"
+        # Route Chromium through the trusted capture proxy when the parent provided one, so the
+        # agent's app traffic is recorded in the parent (http/external/trajectory policies gate).
+        # The agent could bypass it, but then no records -> those policies stay non-gating (§3).
+        extra_args = [f"--proxy-server={proxy}"] if proxy else []
         profile = BrowserProfile(
             headless=not headful,  # set ASSERTSTATE_BROWSER_HEADFUL=1 to watch the browser live
             executable_path=_CHROME if os.path.exists(_CHROME) else None,
             chromium_sandbox=False,
+            args=extra_args,
         )
         gif = os.environ.get("ASSERTSTATE_BROWSER_GIF")  # set to a path to record the run
         agent: Any = Agent(

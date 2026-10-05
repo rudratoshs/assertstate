@@ -14,8 +14,6 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from assertstate.contract.errors import ContractError, ValidationReport
 from assertstate.contract.schema import validate_schema
 from assertstate.domain.comparator import (
@@ -40,6 +38,7 @@ from assertstate.domain.contract import (
     Precondition,
     SettlementConfig,
     StatisticsConfig,
+    TrajectoryCheck,
     UiExpect,
 )
 from assertstate.domain.targets import ExecutionBudget
@@ -364,6 +363,39 @@ def _parse_touch_other_tenant(entry: dict[str, Any], idx: int) -> DbDeltaPolicy:
     )
 
 
+def _parse_trajectory(raw: list[Any]) -> tuple[TrajectoryCheck, ...]:
+    """`trajectory:` — required orderings of browser-observable requests (FEATURE-SPEC §3).
+
+    Each entry: {require: [ {method?, path_glob}, ... ], ordered?: true}. Compiled to HttpMatch
+    steps (status ignored). Evaluated over the TRUSTED network capture only; non-gating w/o capture.
+    """
+    out: list[TrajectoryCheck] = []
+    for idx, entry in enumerate(raw):
+        where = f"trajectory[{idx}]"
+        if not isinstance(entry, dict):
+            raise ContractError(f"{where}: must be a mapping")
+        unknown = set(entry) - {"require", "ordered"}
+        if unknown:
+            raise ContractError(f"{where}: unknown field(s) {sorted(unknown)}")
+        require = entry.get("require")
+        if not isinstance(require, list) or not require:
+            raise ContractError(f"{where}.require: must be a non-empty list of request matchers")
+        ordered = bool(entry.get("ordered", True))
+        if ordered and len(require) < 2:
+            raise ContractError(f"{where}: ordered trajectory needs >=2 steps (or ordered: false)")
+        steps: list[HttpMatch] = []
+        for j, step in enumerate(require):
+            if not isinstance(step, dict) or not step.get("path_glob"):
+                raise ContractError(f"{where}.require[{j}]: must be a mapping with a `path_glob`")
+            bad = set(step) - {"method", "path_glob"}
+            if bad:
+                raise ContractError(f"{where}.require[{j}]: unknown field(s) {sorted(bad)}")
+            method = step.get("method")
+            steps.append(HttpMatch(method=method, path_glob=str(step["path_glob"]), status=()))
+        out.append(TrajectoryCheck(steps=tuple(steps), ordered=ordered))
+    return tuple(out)
+
+
 def _parse_expect(raw: list[Any]) -> tuple[Any, ...]:
     out: list[Any] = []
     for idx, entry in enumerate(raw):
@@ -462,26 +494,36 @@ def build_contract(raw: dict[str, Any]) -> Contract:
         forbid=_parse_forbid(raw.get("forbid") or []),
         budget=_parse_budget(raw["budget"]) if raw.get("budget") else None,
         preconditions=_parse_preconditions(raw.get("preconditions") or []),
+        trajectory=_parse_trajectory(raw.get("trajectory") or []),
     )
 
 
 def hash_contract(path: str | Path) -> str:
-    """SHA-256 of the raw contract file (for RunMetadata provenance)."""
+    """SHA-256 of the MERGED contract (includes resolved + params substituted) — so the provenance
+    hash reflects what actually ran, not the raw file (FEATURE-SPEC §3)."""
     import hashlib
+    import json
 
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    from assertstate.contract.preprocess import preprocess
+
+    merged = preprocess(path)
+    canonical = json.dumps(merged, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def load_and_validate(path: str | Path) -> tuple[Contract | None, ValidationReport]:
-    """Load + schema + typed + semantic. Returns (contract_or_None, report)."""
+    """Load (+resolve includes/params) + schema + typed + semantic.
+
+    Returns (contract_or_None, report).
+    """
+    from assertstate.contract.preprocess import preprocess
     from assertstate.contract.semantic import validate_semantics
 
     report = ValidationReport()
-    text = Path(path).read_text(encoding="utf-8")
     try:
-        raw = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        report.errors.append(f"contract: invalid YAML: {exc}")
+        raw = preprocess(path)  # include merge + ${param} substitution (fail-closed)
+    except ContractError as exc:
+        report.errors.append(str(exc))
         return None, report
 
     schema_errors = validate_schema(raw)
