@@ -1,51 +1,93 @@
-# Validation outreach — the only thing that answers "will anyone pay"
+# AssertState — WTP validation & outreach
 
-No more desk research. This is the conversation plan for **AssertState**. Goal: conversations with teams **running write-capable browser agents against a real app**. Start with the 4 problem-qualified leads; expand toward ~15. Kill or continue on what they do (not say).
+> Referenced by FEATURE-SPEC §17. Purpose: resolve willingness-to-pay with **conversations**, and
+> **disprove** "this is a SaaS" as fast as prove it. P3 (hosted/SSO/signed reports/cloud browsers)
+> stays unbuilt until this gate passes. "Real problem" is already supported; "validated SaaS" is not.
 
-**Positioning (one line):** *Existing tooling evaluates the agent (Browser Use benchmark/judge, LangSmith, Laminar). AssertState verifies the **application** — the real backend state after the run, not the agent's success claim.*
+## 0. The gate (do not move it)
+Build P3 only with ALL of:
+- **3–5 qualified teams** shipping *write-capable* browser agents against a real backend,
+- each with **a specific use case** where a silent agent failure actually costs money,
+- **a named owner/buyer** (not "a dev who liked it"),
+- **a specific price said out loud and accepted**, and
+- **≥1 paid pilot or deposit.**
 
-## Two-step qualification (don't lead with the security question)
-The 4 leads are **problem-qualified** (they publicly hit the failure) — **not yet buyer-qualified** (unknown: do they run a write-capable agent for customers, sit in security reviews, hold budget?). So qualify in order:
+Short of a paid pilot → "real problem, unvalidated SaaS" → keep it OSS, do not build P3.
 
-**Step 1 — anchor to their failure + qualify the use case (first message):**
-> "I saw your [repo] issue about [failure]. I'm building a small OSS tool that checks the actual application state after a browser agent runs, instead of trusting the agent's success claim. Are you currently running a write-capable browser agent against a real/staging app — and how do you verify the intended backend state actually changed (and that nothing else was touched)?"
+## 1. Signals that justify building P3
+1. **Retention** — they wire the GitHub Action into a real repo and it runs on PRs *unprompted* a week later.
+2. **Value proof** — it catches ≥1 failure their existing tests missed (their words, their data).
+3. **Money** — a named owner accepts a specific number and pays a pilot/deposit.
+All three → build. Two → nurture. One/zero → **do not build.**
 
-**Step 2 — only after they confirm the use case:**
-> "Does this ever become part of a customer/security review? What evidence do you provide today?"
+## 2. Kill criteria (be honest)
+Stop and keep it OSS/reputation if: nobody re-runs it; the pain is "nice-to-have"; they'd use it free
+forever but won't pay; or the moat looks absorbable (a framework ships its own backend-grounded judge).
+In that world AssertState is a **reputation asset** (OSS + the write-up), not a SaaS — a fine outcome.
 
-**The offer (strongest next step):**
-> "I'll wire up 2–3 of these checks against one of your workflows for free and see if it catches anything your current process misses."
-This converts "would you pay?" into "will you give me a real workflow + access?" — far stronger evidence.
+## 3. Target profile — write-capable browser agents + a backend they can't fake
+Teams that get burned by "agent said DONE, state is wrong":
+- AI ops/automation startups (agentic SDR, billing/invoice, onboarding, RPA-replacement) writing to real DBs/CRMs.
+- Internal agent teams at SaaS companies automating back-office flows on staging.
+- Heavy users of Browser Use / Stagehand / Playwright-MCP / JEV.
 
-## The 4 problem-qualified leads (with channel + buyer-signal)
-| Who | Issue / pain | Channel | Buyer signal |
-|---|---|---|---|
-| **@MahlerTom** (Tom Mahler, PhD) | Browser Use **#56** — unrequested actions + false "task completed" | **email via mahler.tech** | **High** — CEO @ Stealth, security-adjacent (PhD), building something |
-| **@FunctionFreak** (Ashish Yadav) | Browser Use **#1763** — lost goal, premature done | **email aashish16yadav@gmail.com** | Medium — AI/ML engineer @ "SKY" |
-| **@axisrow** | jev-ultrafast **#158** — 200-with-error-body = false success | **reply on jev #158** (very active there) | Medium — "AI agent tooling & automation" engineer, 113 repos |
-| **@AmitHem** | Browser Use **#5955** — structured `done` → success | **reply on the issue** (thin profile, 4 repos) | Low — reach for pain-validation, not as a buyer |
+Disqualify: read-only/research agents, pure chat, demo-ware with no real backend, anyone who can't name a cost of a silent failure.
 
-(Draft messages for all four are prepared; MahlerTom is the one to prioritize.)
+## 4. Where to source (real anchors — NOT fabricated leads)
+Mine the exact failure modes AssertState's seeds are grounded in, then contact the people in those threads:
+- Browser Use: issues #5955 (structured `done` → false success), #1763 (lost the goal / wrong value), #56 (unrequested action).
+- jev-ultrafast: #158 (200-with-error-body), #132 (stale action id), #120 (confidence shift).
+- Browser Use / Stagehand Discords; YC AI-agent batch companies; GitHub search: `"agent reported success"`, `"said done"`, `"duplicate"`+`agent`, in agent repos.
 
-## Where to find the other ~11 (don't wait for them)
-- Authors of other Browser Use / Stagehand / Skyvern issues containing "done"/"success"/"wrong"/"regression"/"injection".
-- YC agent startups using Browser Use (20+ YC W25 cited by TechCrunch).
-- Browser Use / Laminar Discord — people debugging write-action agents.
-- Job posts mentioning "browser agent" / "computer-use agent" in production.
-- The recruiting article comment section (a Show HN / dev.to post is the top of this funnel).
+**Target table (fill as you source — I did not invent names):**
 
-## Build timing — AFTER the first real workflow, not before
-Do **not** build a generic demo first. Run the first 4 conversations, find one team with a real staging workflow, then build the tiny **Browser Use + Postgres + `db_delta`** slice **around that customer's workflow**. Sequence: **problem → real workflow → free proof → repeated use → money.**
+| # | Team/handle | Where found (issue/Discord/YC) | Write-capable? backend? | Failure mode they hit | Named owner | Status |
+|---|---|---|---|---|---|---|
+| 1 |  |  |  |  |  | to contact |
+| … (aim for 15 sourced → 3–5 qualified) |
 
-## Signal hierarchy (protect against fooling yourself)
-1. **Strongest:** someone pays / signs a concrete paid pilot or deposit.
-2. **Very strong:** a team reruns it weekly *without you prompting*.
-3. **Strong:** they give you a real staging env + real workflow.
-4. **Medium:** they confirm existing tools can't establish the same fact.
-5. **Weak (ignore as validation):** "cool idea", GitHub stars, issue/article engagement.
+## 5. The wedge demo (≤3 min) — "wait, my tests pass this?"
+```
+assertstate run contracts/pay-invoice.e2e.yaml --app demo --scenario slow_retry   # FAIL, exit 1
+```
+Agent reports DONE, every final-state check is green, yet it FAILs — a slow retry committed a duplicate
+*after* the agent "finished," caught only by the settled DB delta. Open `report.html`. The line that lands:
+**"your current eval passes this run; your database has two charges."** Record a 60-sec Loom of this.
 
-## Kill gate (end of ~week 2–4)
-**Continue only if:** ≥2 paid pilots / written design-partner commitments **AND** ≥3 teams rerun weekly unprompted (strengthened: + a specific accepted price + named buyer).
-**Kill** (→ publish the scenario corpus as a public benchmark + the article; reputation preserved) if: <~15 qualified conversations reachable; <5 teams run it on their own app; <3 real bugs caught that existing tools missed; **zero** paid pilots; or Playwright / Browser Use / Laminar / MS ASSERT ship backend-state + side-effect assertions during the window.
+## 6. Discovery script (ask, don't pitch)
+1. "When your agent says it succeeded, how do you *know* it actually did?"
+2. "Have you shipped a run that looked fine but corrupted state — duplicate, wrong tenant, half-write? What did it cost?"
+3. "Do you re-run agents in CI, or once by hand?"
+4. "What would you pay to block a PR when the agent silently breaks state?" — **then stop talking.**
 
-Downside hedged: even a "kill" leaves the OSS artifact, a cited benchmark corpus, and a strong article — all reputation, none wasted.
+## 7. Two-week cadence
+- **Wk 1:** 60-sec wedge Loom; source 15 teams into §4 table; 10 personalized outreaches/day anchored on *their* failure mode.
+- **Wk 2:** 5–8 discovery calls; for anyone leaning in, get the Action running on their repo; ask the price question every call; tally against §0.
+
+---
+
+## 8. Message templates (personalize the [brackets]; lead with their pain, not the tool)
+
+### A. GitHub issue-thread reply (warmest — they already reported the pain)
+> Ran into this exact class of bug ([their issue]: agent reports success, state says otherwise).
+> I built a small OSS harness that decides pass/fail from the app's own DB/API + settled side-effect
+> deltas instead of the agent's self-report — it catches the "said DONE, committed a duplicate on a
+> slow retry" case your tests pass today. 60-sec demo: [loom]. Curious if this maps to what bit you —
+> happy to wire it against your flow.
+
+### B. Cold DM / email (≤5 sentences)
+> Subject: your [billing/onboarding] agent says "done" — is the row actually right?
+>
+> You're shipping write-capable browser agents against a real backend. The failure that's hard to
+> catch isn't a crash — it's the run that looks successful but wrote a duplicate / wrong-tenant /
+> half-record, which your current evals pass. I built an OSS gate that reads the app's own DB/API
+> (not the agent's claim) and fails the PR when state is actually wrong — [loom, 60s]. If you've hit
+> a silent-state-corruption bug, worth 15 min? I'll run it against one of your flows live.
+
+### C. The ask (end of a good call)
+> "Would you put this as a required check on [their repo] this week, and — if it catches something your
+> tests miss — is that worth $[N]/mo to your team? Who'd own that call?"
+
+## 9. What I will NOT do here
+- Invent named companies/buyers or fake traction.
+- Build P3, publish to PyPI, or make the repo public — all gated on the §0 outcome (and your say-so).
