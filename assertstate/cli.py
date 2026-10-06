@@ -306,12 +306,41 @@ def _resolve_run_json(ref: str) -> Path:
     return _REPO_ROOT / ".assertstate" / "runs" / ref / "run.json"
 
 
+def _paired_mcnemar_counts(
+    base_v: dict[str, Any], cand_v: dict[str, Any]
+) -> tuple[int, int, int, int]:
+    """Build McNemar's 2x2 from two runs' per-trial outcomes, matched by trial index (§8.5).
+
+    Only pairs where BOTH trials are valid (PASS/FAIL) count — a pair with an ERROR/SKIP on either
+    side carries no verdict to compare, so it is dropped (never silently treated as a pass/fail).
+    Raises KeyError if per-trial data is absent (fail-closed -> usage error upstream).
+    """
+    base_t = base_v["per_trial"]
+    cand_t = cand_v["per_trial"]
+    both_pass = b = c = both_fail = 0
+    for bt, ct in zip(base_t, cand_t):  # pair by index (same scenario/seed per trial)
+        bo, co = bt.get("outcome"), ct.get("outcome")
+        if bo not in ("PASS", "FAIL") or co not in ("PASS", "FAIL"):
+            continue  # not a valid matched pair
+        if bo == "PASS" and co == "PASS":
+            both_pass += 1
+        elif bo == "PASS" and co == "FAIL":
+            b += 1  # baseline passed, candidate failed -> candidate worse
+        elif bo == "FAIL" and co == "PASS":
+            c += 1
+        else:
+            both_fail += 1
+    return both_pass, b, c, both_fail
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
     """Regression / version comparison (FEATURE-SPEC §8.5, §10): is the candidate run
     SIGNIFICANTLY worse than the baseline? Exit 1 if it regressed, 0 otherwise (CI-gating).
-    This is NOT the Wilson acceptance gate — it uses the two-proportion difference test.
+    This is NOT the Wilson acceptance gate. Default: the two-proportion difference test (independent
+    runs). `--paired` uses McNemar's test over trial-index-matched outcomes (same scenarios on both
+    — the correct test for a model/version swap run on identical trials).
     """
-    from assertstate.stats.compare import two_proportion
+    from assertstate.stats.compare import mcnemar, two_proportion
 
     base_json = _resolve_run_json(args.baseline)
     cand_json = _resolve_run_json(args.candidate)
@@ -322,14 +351,24 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     base = json.loads(base_json.read_text(encoding="utf-8")).get("verdict", {})
     cand = json.loads(cand_json.read_text(encoding="utf-8")).get("verdict", {})
     try:
-        result = two_proportion(
-            int(base["passed"]),
-            int(base["valid_trials"]),
-            int(cand["passed"]),
-            int(cand["valid_trials"]),
-            confidence=args.confidence,
-            side="one_sided",
-        )
+        if args.paired:
+            both_pass, b, c, both_fail = _paired_mcnemar_counts(base, cand)
+            if both_pass + b + c + both_fail == 0:
+                print(
+                    "compare --paired: no trial-index-matched valid (PASS/FAIL) pairs to compare",
+                    file=sys.stderr,
+                )
+                return 2
+            result = mcnemar(both_pass, b, c, both_fail, confidence=args.confidence)
+        else:
+            result = two_proportion(
+                int(base["passed"]),
+                int(base["valid_trials"]),
+                int(cand["passed"]),
+                int(cand["valid_trials"]),
+                confidence=args.confidence,
+                side="one_sided",
+            )
     except (KeyError, ValueError) as exc:
         print(f"compare: cannot compare these runs ({exc})", file=sys.stderr)
         return 2
@@ -343,6 +382,51 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return 1 if result.regressed else 0
 
 
+def _cmd_history(args: argparse.Namespace) -> int:
+    """Regression history (FEATURE-SPEC §13): the pass-rate trend of past runs from the local
+    evidence store, and whether the latest run of a contract regressed vs the prior one. Read-only;
+    reuses the redacted run.json the bundle already wrote. Exit 0, or 1 with --gate on a regression.
+    """
+    from dataclasses import asdict
+
+    from assertstate.history import latest_regression, load_history
+
+    store = Path(args.store) if args.store else _REPO_ROOT / ".assertstate"
+    records = load_history(store, contract_hash=args.contract_hash, scenario=args.scenario)
+    shown = records[-args.limit :] if args.limit else records
+    regression = latest_regression(records, confidence=args.confidence)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "runs": [asdict(r) for r in shown],
+                    "regression": asdict(regression) if regression else None,
+                },
+                indent=2,
+            )
+        )
+    elif not shown:
+        print("history: no runs in the store (nothing to show)")
+    else:
+        print(f"{'written_at':25} {'run_id':24} {'outcome':13} {'pass_rate':>9}  adapter")
+        for r in shown:
+            rate = "-" if r.pass_rate is None else f"{r.pass_rate:.3f}"
+            adapter = r.adapter_name or "-"
+            print(f"{r.written_at:25.25} {r.run_id:24.24} {r.outcome:13} {rate:>9}  {adapter}")
+        if regression is not None:
+            verdict = (
+                "REGRESSED vs prior run"
+                if regression.regressed
+                else "no significant regression vs prior run"
+            )
+            print(f"\nlatest: {verdict} — {regression.detail}")
+        else:
+            print("\nlatest: need >=2 runs of the same contract for a regression check")
+
+    return 1 if (args.gate and regression is not None and regression.regressed) else 0
+
+
 _INIT_CONFIG = """\
 # assertstate.yaml — oracle + browser config for a real app target (FEATURE-SPEC §14).
 apps:
@@ -352,6 +436,8 @@ apps:
       creds_ref: "env:STAGING_BROWSER_LOGIN"   # resolved trusted-side, redacted in evidence
       # capture: auto                           # auto (http:// only) | on | off — trusted network
       #                                         # capture for http/external/trajectory policies (§3)
+      # cdp_url_ref: "env:CLOUD_BROWSER_WSS"    # attach to a remote cloud browser over CDP (§9.5)
+      #                                         # instead of launching local Chrome; literal cdp_url ok
     oracle:
       db_dsn: "env:ORACLE_DSN"                  # MUST resolve to a READ-ONLY role
       # api_base: "https://staging.example.com/api"   # optional read-only API oracle (GET/HEAD)
@@ -561,8 +647,26 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_.add_argument("baseline", help="baseline run-id, run dir, or run.json")
     cmp_.add_argument("candidate", help="candidate run-id, run dir, or run.json")
     cmp_.add_argument("--confidence", type=float, default=0.95)
+    cmp_.add_argument(
+        "--paired",
+        action="store_true",
+        help="McNemar's test over trial-index-matched outcomes (same scenarios on both runs, "
+        "e.g. a model/version swap) instead of the independent two-proportion test",
+    )
     cmp_.add_argument("--json", action="store_true")
     cmp_.set_defaults(func=_cmd_compare)
+
+    hist = sub.add_parser(
+        "history", help="pass-rate trend of past runs + regression of the latest vs the prior run"
+    )
+    hist.add_argument("--store", help="evidence store dir (default: ./.assertstate)")
+    hist.add_argument("--contract-hash", dest="contract_hash", help="filter to one contract hash")
+    hist.add_argument("--scenario", help="filter to one scenario id")
+    hist.add_argument("--limit", type=int, default=0, help="show only the last N runs (0 = all)")
+    hist.add_argument("--confidence", type=float, default=0.95)
+    hist.add_argument("--gate", action="store_true", help="exit 1 if the latest run regressed")
+    hist.add_argument("--json", action="store_true")
+    hist.set_defaults(func=_cmd_history)
 
     ini = sub.add_parser("init", help="scaffold a starter assertstate.yaml + example contract")
     ini.add_argument("--dir", default=".", help="target directory (default: current)")

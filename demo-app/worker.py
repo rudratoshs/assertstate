@@ -86,9 +86,10 @@ class DemoWorker:
                     tenant = "globex" if self._fault == FAULT_CROSS_TENANT else self._tenant
                     amount = "9.87" if self._fault == FAULT_WRONG_AMOUNT else self._amount
                     cur.execute(
-                        "INSERT INTO payments(invoice, tenant_id, amount, status, idempotency_key) "
-                        "VALUES (%s, %s, %s, 'paid', %s)",
-                        (invoice, tenant, amount, invoice),
+                        "INSERT INTO payments"
+                        "(invoice, tenant_id, amount, status, idempotency_key, run_id) "
+                        "VALUES (%s, %s, %s, 'paid', %s, %s)",
+                        (invoice, tenant, amount, invoice, run_id),
                     )
                 cur.execute("UPDATE payment_jobs SET state='done' WHERE id=%s", (job_id,))
                 cur.execute(

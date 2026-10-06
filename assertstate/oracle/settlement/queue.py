@@ -21,7 +21,13 @@ class QueueState:
 
 
 class QueueProbe:
-    """Observes a run's queue state via read-only SELECTs."""
+    """Observes a run's queue state via read-only SELECTs.
+
+    DEMO-COUPLED: this probe reads the demo app's fixed queue schema (`payment_jobs` + `run_markers`
+    keyed by `run_id`). The contract's `settle.queue` names the workflow-owned queue for the record,
+    but this probe does not parameterize on it — drain settlement is a demo-env capability. A real
+    `--config` app that wants drain supplies its own queue-state probe for its own schema.
+    """
 
     def __init__(self, probe: DbProbe) -> None:
         self._p = probe

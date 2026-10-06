@@ -18,16 +18,18 @@ from urllib.parse import urlparse
 from assertstate.adapters.base import AdapterError
 from assertstate.adapters.runner import run_adapter
 from assertstate.domain.contract import (
+    RUNNABLE_SETTLE_MODES,
     ApiExpect,
     Contract,
     DbDeltaPolicy,
     DbExpect,
+    DestructiveActionPolicy,
     ExternalPolicy,
     HttpPolicy,
     UiExpect,
 )
 from assertstate.domain.result import Attribution, Outcome, SettlementRecord, TrialResult
-from assertstate.domain.snapshot import Snapshot
+from assertstate.domain.snapshot import Delta, Snapshot
 from assertstate.domain.trace import AgentTrace, BrowserObservations
 from assertstate.domain.verdict import RunVerdict
 from assertstate.env.seed import preconditions_established, verify_preconditions
@@ -50,6 +52,7 @@ from assertstate.verifier.expect.evaluator import (
 )
 from assertstate.verifier.jsonpath import JsonPathError
 from assertstate.verifier.policy_engine.db_delta import evaluate_db_delta
+from assertstate.verifier.policy_engine.destructive import evaluate_destructive
 from assertstate.verifier.policy_engine.external import evaluate_external
 from assertstate.verifier.policy_engine.http import evaluate_http
 from assertstate.verifier.policy_engine.sequence import evaluate_trajectory
@@ -61,12 +64,33 @@ class RunOutput:
     trials: list[TrialResult]
 
 
+def _needs_snapshot(policy: object) -> bool:
+    """Policies that compare a trusted before/after diff (they need a baseline+after snapshot)."""
+    return isinstance(policy, (DbDeltaPolicy, DestructiveActionPolicy))
+
+
+def _filter_delta_by_run_id(delta: Delta, run_id_col: str, run_id: str) -> Delta:
+    """Keep only rows carrying this run's id (run_correlated, §5a): added/removed by the row's own
+    value, changed by the AFTER row. Removes temporal inference — a concurrent run is excluded."""
+
+    def owned(row: Any) -> bool:
+        return str(row.get(run_id_col)) == str(run_id)
+
+    return Delta(
+        query_id=delta.query_id,
+        added={k: r for k, r in delta.added.items() if owned(r)},
+        removed={k: r for k, r in delta.removed.items() if owned(r)},
+        changed={k: (b, a) for k, (b, a) in delta.changed.items() if owned(a)},
+    )
+
+
 def _delta_specs(contract: Contract) -> list[SnapshotQuery]:
     specs = []
     i = 0
     for policy in contract.forbid:
-        if isinstance(policy, DbDeltaPolicy):
-            specs.append(SnapshotQuery(query_id=f"f{i}", sql=policy.query, key=policy.key or "id"))
+        if _needs_snapshot(policy):
+            # DbDeltaPolicy and DestructiveActionPolicy both carry `query` + optional `key`.
+            specs.append(SnapshotQuery(query_id=f"f{i}", sql=policy.query, key=policy.key or "id"))  # type: ignore[union-attr]
             i += 1
     return specs
 
@@ -74,26 +98,42 @@ def _delta_specs(contract: Contract) -> list[SnapshotQuery]:
 def _settle(contract: Contract, probe: DbProbe, ctx: TrialContext) -> SettlementRecord | None:
     """Dispatch the contract's settlement. One settlement per trial (one after-snapshot).
 
-    All-`bounded` -> bounded (needs the trusted capture anchor). Otherwise, if any policy
-    requires `drain`, drain (the stronger server-side guarantee). No forbid -> no settle.
+    All-`bounded` -> bounded (needs the trusted capture anchor). If any policy requires `drain` or
+    `run_correlated`, prove completion via the queue drain (run_correlated additionally filters the
+    delta by run id, in _verify). No settled policy -> no settle.
     """
-    deltas = [p for p in contract.forbid if isinstance(p, DbDeltaPolicy)]
-    modes = {p.settle.mode for p in deltas}
+    settled = [
+        p for p in contract.forbid if isinstance(p, (DbDeltaPolicy, DestructiveActionPolicy))
+    ]
+    modes = {p.settle.mode for p in settled}
     if not modes:
         return None  # http/external policies need no DB settlement
 
+    # Fail-closed: a settle mode that is not RUNNABLE must NOT silently fall through to a windowless
+    # after-snapshot (a latent false-PASS in an async env) -> trusted internal error -> trial ERROR.
+    non_runnable = {m for m in modes if m not in RUNNABLE_SETTLE_MODES}
+    if non_runnable:
+        raise SettlementError(
+            f"settle mode(s) {sorted(non_runnable)} are not runnable (P2/deferred); "
+            f"runnable modes are {sorted(RUNNABLE_SETTLE_MODES)}"
+        )
+
     if modes == {"bounded"}:
-        max_wait = max((p.settle.max_wait_s or 0.0) for p in deltas)
+        max_wait = max((p.settle.max_wait_s or 0.0) for p in settled)
         if ctx.capture is not None:
             observations = observations_from_capture(ctx.capture)
         else:
             observations = BrowserObservations()  # no instrumentation -> anchor None -> ERROR
         return SettlementController().bounded(observations, max_wait_s=max_wait)
 
-    drains = [p for p in deltas if p.settle.mode == "drain"]
-    if drains:
-        timeout = max((p.settle.timeout_s or 10.0) for p in drains)
-        return SettlementController().drain(QueueProbe(probe), ctx.run_id, timeout_s=timeout).record
+    # drain / run_correlated both prove completion by draining the workflow queue.
+    queue_backed = [p for p in settled if p.settle.mode in ("drain", "run_correlated")]
+    if queue_backed:
+        timeout = max((p.settle.timeout_s or 10.0) for p in queue_backed)
+        controller = SettlementController()
+        if any(p.settle.mode == "run_correlated" for p in queue_backed):
+            return controller.run_correlated(QueueProbe(probe), ctx.run_id, timeout_s=timeout)
+        return controller.drain(QueueProbe(probe), ctx.run_id, timeout_s=timeout).record
     return None
 
 
@@ -147,7 +187,16 @@ def _verify(
             qid = f"f{db_i}"
             db_i += 1
             d = diff(qid, baseline.queries[qid], after.queries[qid])
+            # run_correlated: restrict the diff to rows carrying THIS run's id, so a concurrent
+            # other run's writes are excluded with no temporal inference (FEATURE-SPEC §5a, P2).
+            if policy.settle.mode == "run_correlated" and policy.settle.run_id_col:
+                d = _filter_delta_by_run_id(d, policy.settle.run_id_col, ctx.run_id)
             pr = evaluate_db_delta(policy, d, attribution)
+        elif isinstance(policy, DestructiveActionPolicy):
+            qid = f"f{db_i}"
+            db_i += 1
+            d = diff(qid, baseline.queries[qid], after.queries[qid])
+            pr = evaluate_destructive(policy, d, probe, attribution)
         elif isinstance(policy, HttpPolicy):
             pr = evaluate_http(policy, observations)
         elif isinstance(policy, ExternalPolicy):

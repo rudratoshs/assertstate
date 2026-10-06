@@ -1,6 +1,8 @@
 # 3-Independent-Agent Audit — browser-agent outcome & side-effect verifier
 _Run 2026-10-02. Three adversarial agents, independent lenses, triangulated._
 
+> **Historical record — superseded on go-to-market.** The "do not build as a paid product / require written WTP first" recommendation below reflects this audit's point-in-time view. The current plan is to **launch the OSS engine directly to market** with no willingness-to-pay gate; commercial (P3) features are demand-driven (FEATURE-SPEC §17). The audit's *technical* findings (the wedge, the failure modes, the determinism angle, the state-reset risk) still stand.
+
 ## Triangulated verdict
 - **As a paid product:** DO NOT BUILD (unproven WTP + no defensible wedge + frameworks self-shipping the fix + name taken + tiny buyer pool).
 - **The survivor across all 3 lenses:** a PUBLIC BENCHMARK of browser-agent false-completion + forbidden-side-effect rates on backend ground truth.

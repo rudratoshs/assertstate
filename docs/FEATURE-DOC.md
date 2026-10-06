@@ -8,7 +8,7 @@
 
 **Status:** Phase-0 scaffold exists (runnable contract CLI). This doc defines the full feature surface and where we sit vs the field.
 
-> ⚠️ **Honest framing (from the 3-agent audit, [AUDIT-3-agents.md](AUDIT-3-agents.md)):** the *problem* is verified real; *willingness-to-pay is unproven*; the wedge below is genuinely unoccupied but thin and converging. Build gated on getting 3–5 written "I'd pay" commitments. This doc is the build spec, not a claim the market is proven.
+> ⚠️ **Honest framing (from the 3-agent audit, [AUDIT-3-agents.md](AUDIT-3-agents.md)):** the *problem* is verified real; the wedge below is genuinely unoccupied but thin and converging. The engine ships directly to market; commercial (P3) features follow real adoption/demand (FEATURE-SPEC §17). This doc is the build spec + competitive map, not a claim the market is proven.
 
 ---
 
@@ -116,7 +116,7 @@ Across the 10 reviewed competitors, **no single product combines these five on o
 | Cloud / hosted browser | ◑ (later) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ? | ◑ (Azure) | ❌ |
 | Staging-env support | ✅ | ❌ | ◑ | ◑ | ✅ | ◑ | ❌ | ❌ | ❌ | ✅Ⓓ | ◑ |
 | **State reset / seeding** (hard part) | ✅ | ❌ | ❌ | ❌ | ◑ | ❌ | ❌ | ❌ | ❌ | ✅Ⓓ | ❌ |
-| Network capture (CDP/proxy) | ✅ | ❌ | ◑ | ❌ | ◑ | ❌ | ❌ | ❌ | ◑ | ✅ | ❌ |
+| Network capture (CDP/proxy) | ◑ | ❌ | ◑ | ❌ | ◑ | ❌ | ❌ | ❌ | ◑ | ✅ | ❌ |
 
 ### H. CI / CD
 | Feature | OUR | REL | AST | PF | MOM | GSK | LS | BT | LAM | PW | OSS |
@@ -180,7 +180,7 @@ Across the 10 reviewed competitors, **no single product combines these five on o
 
 **Phase 2 (reach):** Stagehand + Playwright MCP + JEV adapters; model-swap regression diffing; staging state-reset helpers; richer evidence/audit bundle for security reviews.
 
-**Phase 3 (commercial, only if WTP proven):** hosted parallel runs; regression history; signed evidence reports for procurement; SSO/RBAC; cloud browsers.
+**Phase 3 (commercial, post-launch / demand-driven):** hosted parallel runs; regression history; signed evidence reports for procurement; SSO/RBAC; cloud browsers.
 
 **Explicitly NOT building:** another browser agent; a faster JEV; generic LLM eval/leaderboards (LangSmith/Braintrust own it); jailbreak/attack-pack library (Promptfoo owns it); trace-viewer/replay (Laminar/Playwright own it); runtime "action-integrity" safety layer (Acira/Noma own it).
 
@@ -200,7 +200,7 @@ Across the 10 reviewed competitors, **no single product combines these five on o
 - **Name taken** → rename + full availability check before launch.
 - **Playwright is the absorption threat** (96k★, owns CDP/DBⒹ/assertions/traces/Action/Test Agents) — if it ships a declarative side-effect policy + agent adapter, the DIY gap closes. Lead on the things it has *only* as DIY: the declarative policy + statistical verdict + framework-neutral contract.
 - **Microsoft ASSERT** (321★, daily) needs only backend+browser grounding to absorb this — move while it's trace-only.
-- **WTP unproven + a 1-week DIY substitute exists** (Playwright+DB) → the product must be *materially less work than the DIY*, and you must get **3–5 written pay commitments** before heavy build.
+- **A 1-week DIY substitute exists** (Playwright+DB) → the product must be *materially less work than the DIY* to win and keep adoption.
 - **Buyer pool is small** (write-capable-browser-agent teams) → the demo/article must find exactly them.
 
 ---

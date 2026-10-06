@@ -8,7 +8,7 @@ GRANT CONNECT ON DATABASE :"db_name" TO :"oracle_role";
 GRANT USAGE ON SCHEMA public TO :"oracle_role";
 
 -- Read-only on the application tables the oracle legitimately observes.
-GRANT SELECT ON tenants, payments, payment_jobs, run_markers TO :"oracle_role";
+GRANT SELECT ON tenants, payments, payment_jobs, run_markers, approvals TO :"oracle_role";
 
 -- Deliberately: NO grant of any kind on assertstate_readonly_probe to the oracle role.
 -- (A fresh role has no privileges by default; we simply never grant them here.)

@@ -306,7 +306,8 @@ def test_bounded_requires_max_wait() -> None:
     assert any("bounded requires a `max_wait`" in e for e in report.errors)
 
 
-def test_run_correlated_is_warned_not_runnable() -> None:
+def test_run_correlated_requires_run_id_col_queue_timeout() -> None:
+    # run_correlated is now runnable (P2, app-cooperation) but needs run_id_col + queue + timeout.
     _, report = _load_dict(
         _base(
             forbid=[
@@ -320,8 +321,32 @@ def test_run_correlated_is_warned_not_runnable() -> None:
             ]
         )
     )
-    assert report.ok  # valid spec, but P2
-    assert any("run_correlated is P2" in w for w in report.warnings)
+    assert not report.ok
+    assert any("run_correlated requires a `run_id_col`" in e for e in report.errors)
+    assert any("run_correlated requires a `queue`" in e for e in report.errors)
+    assert any("run_correlated requires a `timeout`" in e for e in report.errors)
+
+
+def test_run_correlated_valid_when_fully_specified() -> None:
+    _, report = _load_dict(
+        _base(
+            forbid=[
+                {
+                    "db_delta": {
+                        "query": "SELECT id, run_id FROM payments",
+                        "max_added": 1,
+                        "settle": {
+                            "mode": "run_correlated",
+                            "run_id_col": "run_id",
+                            "queue": "payment_jobs",
+                            "timeout": "10s",
+                        },
+                    }
+                }
+            ]
+        )
+    )
+    assert report.ok, report.errors
 
 
 # --- helper: validate a dict by writing it to a temp file (loader reads paths) ---

@@ -296,13 +296,13 @@ P0-22 P0 validation ◀── P0-20,21
 - **Security/correctness invariants:** every §37 box checked by a passing test, not by assertion.
 - **Tests required:** the whole pyramid green.
 - **Acceptance criteria:** §37 checklist fully satisfied.
-- **Definition of Done:** P0 is DONE; proceed to WTP outreach (FEATURE-SPEC §17 / outreach.md), not more docs.
+- **Definition of Done:** P0 is DONE; proceed to launch/outreach (FEATURE-SPEC §17 / outreach.md), not more docs.
 - **Dependencies:** P0-20, P0-21.
 
 ---
 
 ## Out of scope for this backlog (do NOT create)
-Per DEVELOPMENT.md §40 + FEATURE-SPEC §17: no `API-DESIGN.md` / `DB-DESIGN.md` / `UI-DESIGN.md` / `SECURITY-DESIGN.md`; no BrowserObservations/CDP, `bounded` settlement, HTTP/external policies, API oracle, other adapters, GitHub Action, HTML, `run_correlated`, hosted platform, UI, users/orgs/roles. Those are P1–P3, gated. **After P0-22, the next artifact is code's validation result + WTP conversations — not another specification.**
+Per DEVELOPMENT.md §40 + FEATURE-SPEC §17: no `API-DESIGN.md` / `DB-DESIGN.md` / `UI-DESIGN.md` / `SECURITY-DESIGN.md`; no BrowserObservations/CDP, `bounded` settlement, HTTP/external policies, API oracle, other adapters, GitHub Action, HTML, `run_correlated`, hosted platform, UI, users/orgs/roles. Those are P1–P3, later phases. **After P0-22, the next artifact is code's validation result + the direct launch (FEATURE-SPEC §17 / outreach.md) — not another specification.**
 
 ## References
 [FEATURE-SPEC.md](FEATURE-SPEC.md) v2.3 · [SYSTEM-DESIGN.md](SYSTEM-DESIGN.md) v2.2 · [DEVELOPMENT.md](DEVELOPMENT.md) v1.1 · [scenarios.md](scenarios.md) · [outreach.md](outreach.md).

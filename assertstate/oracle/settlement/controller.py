@@ -12,10 +12,13 @@ the TRUSTED last causal browser-request completion (BrowserObservations), then s
 bound is an ENVIRONMENTAL ASSUMPTION recorded in evidence — `bounded` does NOT independently
 detect escaped server-side writes (that is `drain`'s job). No trusted anchor -> ERROR.
 
+`run_correlated` (P2): completion is proven exactly like `drain` (producers closed + queue empty),
+but the DELTA is then filtered to rows carrying THIS run's id (`run_id_col == run_id`), so a
+concurrent OTHER run's writes are excluded without any temporal/timing inference. It requires app
+cooperation: the app must stamp the run id onto its writes AND expose the drainable queue.
+
 If a guarantee cannot be established (drain timeout/producers-open; bounded missing anchor),
 that is ERROR, never FAIL (settlement uncertainty must not be laundered into a verdict).
-
-`run_correlated` remains P2 (not implemented).
 """
 
 from __future__ import annotations
@@ -78,6 +81,34 @@ class SettlementController:
                     f"producers_closed={state.producers_closed}"
                 )
             time.sleep(poll_s)
+
+    def run_correlated(
+        self,
+        queue: QueueProbe,
+        run_id: str,
+        *,
+        timeout_s: float,
+        poll_s: float = 0.05,
+    ) -> SettlementRecord:
+        """Prove the run is COMPLETE (same drain condition), for a run-correlated diff (§5a, P2).
+
+        Completion is established exactly as `drain` (producers closed + queue empty), so a late
+        worker write cannot escape the snapshot. The caller then filters the delta by
+        `run_id_col == run_id` — removing temporal inference entirely. Failure to prove completion
+        within `timeout_s` -> SettlementError (-> ERROR, never a silent pass).
+        """
+        drained = self.drain(queue, run_id, timeout_s=timeout_s, poll_s=poll_s)
+        rec = drained.record
+        return SettlementRecord(
+            mode="run_correlated",
+            causal_start_at=rec.causal_start_at,
+            started_at=rec.started_at,
+            completed_at=rec.completed_at,
+            bound_or_drain_signal=(
+                f"run_correlated: completion via queue drain ({rec.bound_or_drain_signal}); "
+                f"delta filtered to run_id={run_id!r}"
+            ),
+        )
 
     def bounded(
         self,

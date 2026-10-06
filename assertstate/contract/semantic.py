@@ -17,6 +17,8 @@ from assertstate.domain.contract import (
     ApiExpect,
     Contract,
     DbDeltaPolicy,
+    DestructiveActionPolicy,
+    SettlementConfig,
 )
 from assertstate.oracle.delta.predicate import PredicateError, referenced_columns
 
@@ -39,26 +41,40 @@ def _validate_statistics(c: Contract, report: ValidationReport) -> None:
         report.errors.append("statistics.side: must be one_sided or two_sided")
 
 
-def _validate_db_delta(policy: DbDeltaPolicy, idx: int, report: ValidationReport) -> None:
-    where = f"forbid[{idx}].db_delta"
-    if policy.settle.mode not in SETTLE_MODES:
+def _validate_settle(settle: SettlementConfig, where: str, report: ValidationReport) -> None:
+    """Shared settle-mode validation (db_delta + destructive_action)."""
+    if settle.mode not in SETTLE_MODES:
         report.errors.append(
-            f"{where}.settle.mode: unknown {policy.settle.mode!r} (one of {sorted(SETTLE_MODES)})"
-        )
-    elif not policy.settle.runnable:  # run_correlated is P2/deferred
-        report.warnings.append(
-            f"{where}.settle.mode={policy.settle.mode}: valid spec, but not runnable yet "
-            f"(run_correlated is P2); runnable modes are drain and bounded"
+            f"{where}.settle.mode: unknown {settle.mode!r} (one of {sorted(SETTLE_MODES)})"
         )
     # Per-mode required fields.
-    if policy.settle.mode == "drain":
-        if not policy.settle.queue:
+    if settle.mode == "drain":
+        if not settle.queue:
             report.errors.append(f"{where}.settle: drain requires a `queue` (workflow-owned)")
-        if policy.settle.timeout_s is None:
+        if settle.timeout_s is None:
             report.errors.append(f"{where}.settle: drain requires a `timeout`")
-    elif policy.settle.mode == "bounded":
-        if policy.settle.max_wait_s is None:
+    elif settle.mode == "bounded":
+        if settle.max_wait_s is None:
             report.errors.append(f"{where}.settle: bounded requires a `max_wait`")
+    elif settle.mode == "run_correlated":
+        # P2, app-cooperation: the app must stamp the run id onto its writes AND expose the
+        # drainable queue used to prove completion (producers closed + queue empty).
+        if not settle.run_id_col:
+            report.errors.append(
+                f"{where}.settle: run_correlated requires a `run_id_col` (the column the app "
+                "stamps with the run id; the delta is filtered to this run's rows)"
+            )
+        if not settle.queue:
+            report.errors.append(
+                f"{where}.settle: run_correlated requires a `queue` to prove completion (drain)"
+            )
+        if settle.timeout_s is None:
+            report.errors.append(f"{where}.settle: run_correlated requires a `timeout`")
+
+
+def _validate_db_delta(policy: DbDeltaPolicy, idx: int, report: ValidationReport) -> None:
+    where = f"forbid[{idx}].db_delta"
+    _validate_settle(policy.settle, where, report)
 
     has_pred = any(
         [
@@ -131,6 +147,22 @@ def _validate_projection(policy: DbDeltaPolicy, where: str, report: ValidationRe
         report.errors.append(f"{where}: key {policy.key!r} is not in the query projection")
 
 
+def _validate_destructive(
+    policy: DestructiveActionPolicy, idx: int, report: ValidationReport
+) -> None:
+    where = f"forbid[{idx}].destructive_action"
+    _validate_settle(policy.settle, where, report)
+    if not policy.approval_query:
+        report.errors.append(f"{where}: `approval_query` is required (the trusted approval read)")
+    # Note: approval_where uses the comparator mini-language (string/number equality + ordering),
+    # which has no boolean literal. `approved = true` fails CLOSED at runtime (PredicateError ->
+    # trial ERROR, never a wrong verdict); boolean filters belong in the approval_query SQL (see the
+    # shipped example). A load-time parse-check is not added: the engine has no parse-only entry and
+    # a matches()-probe would false-reject valid ordering predicates (e.g. `amount > 5`).
+    # The destructive signal (an in-scope removal) always polices — it can fire — so no
+    # polices-nothing check is needed; the fire condition is "destructive AND no approval".
+
+
 def validate_semantics(c: Contract) -> ValidationReport:
     report = ValidationReport()
     _validate_statistics(c, report)
@@ -138,6 +170,8 @@ def validate_semantics(c: Contract) -> ValidationReport:
     for idx, policy in enumerate(c.forbid):
         if isinstance(policy, DbDeltaPolicy):
             _validate_db_delta(policy, idx, report)
+        elif isinstance(policy, DestructiveActionPolicy):
+            _validate_destructive(policy, idx, report)
         # http / external policies are structurally validated at load; nothing further here.
 
     # expect.api must be observational: GET/HEAD only (FEATURE-SPEC §3.7).

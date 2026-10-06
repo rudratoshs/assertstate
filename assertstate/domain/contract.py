@@ -16,8 +16,8 @@ SETTLE_DRAIN = "drain"
 SETTLE_BOUNDED = "bounded"
 SETTLE_RUN_CORRELATED = "run_correlated"
 SETTLE_MODES = frozenset({SETTLE_DRAIN, SETTLE_BOUNDED, SETTLE_RUN_CORRELATED})
-#: Runnable settlement modes: drain (P0) + bounded (P1). run_correlated stays P2/deferred.
-RUNNABLE_SETTLE_MODES = frozenset({SETTLE_DRAIN, SETTLE_BOUNDED})
+#: Runnable settlement modes: drain (P0) + bounded (P1) + run_correlated (P2, app-cooperation).
+RUNNABLE_SETTLE_MODES = frozenset({SETTLE_DRAIN, SETTLE_BOUNDED, SETTLE_RUN_CORRELATED})
 
 
 @dataclass(frozen=True)
@@ -32,12 +32,13 @@ class Eventually:
 class SettlementConfig:
     """When the after-snapshot may be taken (FEATURE-SPEC §5a; DEVELOPMENT §18)."""
 
-    mode: str  # one of SETTLE_MODES; runnable: drain (P0) + bounded (P1)
-    queue: str | None = None  # drain: workflow-owned queue name
-    timeout_s: float | None = None  # drain: timeout -> ERROR on expiry
+    mode: str  # one of SETTLE_MODES; runnable: drain (P0) + bounded (P1) + run_correlated (P2)
+    queue: str | None = None  # drain / run_correlated: workflow-owned queue name
+    timeout_s: float | None = None  # drain / run_correlated: timeout -> ERROR on expiry
     max_wait_s: float | None = (
         None  # bounded: documented propagation bound from last causal request
     )
+    run_id_col: str | None = None  # run_correlated: the column the app stamps with the run id
 
     @property
     def runnable(self) -> bool:
@@ -148,8 +149,31 @@ class TrajectoryCheck:
     ordered: bool = True  # True: each step must occur after the prior completes; False: all occur
 
 
+@dataclass(frozen=True)
+class DestructiveActionPolicy:
+    """forbid.destructive_action — an irreversible op must not occur WITHOUT an observed approval
+    (FEATURE-SPEC §5.6, `[P2]`).
+
+    State-verified, INV-8-safe: it fires when an in-scope row is REMOVED in the trusted before/after
+    diff (a delete, or an update that moves the row OUT of the `where` scope — the scope is applied
+    in the SQL, so a row that leaves it drops from the after-snapshot) AND no approval record is
+    present in the trusted state (`approval_query` returns no row satisfying `approval_where`). The
+    approval evidence is read independently from the app's own state — NEVER from the agent's
+    trace/claim (a trace-based approval gate would violate INV-8). Gating only under CAUSAL
+    attribution, like db_delta. (An in-place destructive UPDATE that keeps the row in-scope is a
+    `changed`, not a removal, so it is not caught by this removal-based check.)
+    """
+
+    query: str  # projects the destructive table's key, scoped by `where` (before/after diff)
+    settle: SettlementConfig
+    approval_query: str  # trusted read that returns approval rows
+    where: str | None = None  # the destructive scope; a row leaving it (delete/move-out) = removal
+    approval_where: str | None = None  # which approval rows count (None = any row present)
+    key: str | None = None  # diff key (default "id")
+
+
 ExpectEntry = DbExpect | ApiExpect | UiExpect
-ForbidEntry = DbDeltaPolicy | HttpPolicy | ExternalPolicy
+ForbidEntry = DbDeltaPolicy | HttpPolicy | ExternalPolicy | DestructiveActionPolicy
 
 
 @dataclass(frozen=True)

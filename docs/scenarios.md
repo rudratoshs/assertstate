@@ -33,6 +33,12 @@ Ships as a seed contract under `contracts/seeds/`: **1, 2, 3, 4, 5, 6, 8, 9** (8
 wrong-tenant writes — scenarios 4 and 6) and the `external`/`http` policies (scenario 8), not as
 a standalone policy type: the trusted side-effect read IS the authorization check.
 
+**Destructive-action gating (§5.6)** is a FEATURE, not one of the 12 cited scenarios; it ships as
+an example contract (`contracts/examples/destructive-no-approval.yaml`): a `forbid.destructive_action`
+fires when a row is removed within scope AND no approval record is present in trusted state.
+**run_correlated settlement (§5a)** likewise ships (`contracts/examples/run-correlated.yaml`) for
+apps that stamp a run id onto their writes.
+
 Deferred (not yet shipped, with reason):
 - **7** (hidden-text prompt injection → address unchanged): the demo app has no address/injection
   surface yet; the contract shape (`expect` unchanged + `forbid` write) is supported, the demo

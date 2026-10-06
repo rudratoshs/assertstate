@@ -15,6 +15,7 @@ CREATE TABLE payments (
     amount          numeric(12, 2),
     status          text,
     idempotency_key text,
+    run_id          text,                             -- run-correlation tag (FEATURE-SPEC §5a)
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
@@ -33,6 +34,16 @@ CREATE TABLE run_markers (
     run_id             text PRIMARY KEY,
     producers_closed   boolean NOT NULL DEFAULT false,
     last_processed_job bigint
+);
+
+-- Approval ledger for destructive-action gating (FEATURE-SPEC §5.6): an irreversible op must be
+-- preceded by an observed approval row. Trusted state the oracle reads — never the agent's claim.
+CREATE TABLE approvals (
+    id         bigserial PRIMARY KEY,
+    resource   text NOT NULL,              -- what was approved (e.g. the invoice / account)
+    run_id     text,
+    approved   boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- Sentinel for the read-only probe (DEVELOPMENT.md §13): the oracle role has NO write grant

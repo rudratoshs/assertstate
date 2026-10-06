@@ -12,7 +12,7 @@ forbid:
       tenant_col: tenant_id
       tenant: ${tenant}
       where: "invoice='${invoice}'"
-      settle: { mode: drain, queue: payments, timeout: 10s }
+      settle: { mode: drain, queue: payment_jobs, timeout: 10s }
 trajectory:
   - require:
       - { method: POST, path_glob: /api/reserve* }

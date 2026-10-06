@@ -26,6 +26,11 @@ class BrowserConfig:
     # it (once TLS interception lands, or for an http app behind a scheme-ambiguous url); "off"
     # disables it (those observation-based policies then run NON-GATING, never a false FAIL).
     capture: str = "auto"
+    # Optional remote CDP endpoint of an operator-controlled "cloud browser" (self-hosted or a
+    # managed provider): when set, the agent ATTACHES to that browser over CDP instead of launching
+    # local Chrome (FEATURE-SPEC §9.5). It is an agent-side value, resolved from `cdp_url` or a
+    # secret `cdp_url_ref: env:VAR` (a wss://…?token= URL is a credential). None = launch locally.
+    cdp_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -47,7 +52,8 @@ class AppConfig:
 @dataclass(frozen=True)
 class AssertStateConfig:
     apps: dict[str, AppConfig]
-    statistics_defaults: dict[str, object] = field(default_factory=dict)
+    # NOTE: no config-level `statistics` defaults — a contract's `statistics` (trials +
+    # pass_threshold) has NO safe default by design (schema.py) and is per-contract, self-contained.
     redaction_mode: str = "allowlist"
     redaction_allow_fields: tuple[str, ...] = ()  # operator widening of the evidence allowlist
     canonicalizer: str = "canon-v1"

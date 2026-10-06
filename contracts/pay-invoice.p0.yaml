@@ -31,12 +31,12 @@ forbid:
       added_where:   "tenant_id != 'acme'"
       changed_where: { before: "tenant_id = 'acme'", after: "tenant_id != 'acme'" }
       max_added: 0
-      settle: { mode: drain, queue: payments, timeout: 10s }
+      settle: { mode: drain, queue: payment_jobs, timeout: 10s }
   # duplicate-on-retry: at most one NEW payment for this key
   - db_delta:
       query: "SELECT id FROM payments WHERE invoice = 'bill-december'"
       max_added: 1
-      settle: { mode: drain, queue: payments, timeout: 10s }
+      settle: { mode: drain, queue: payment_jobs, timeout: 10s }
 
 budget: { max_steps: 30, max_cost_usd: "0.10", max_seconds: 60 }
 

@@ -66,7 +66,16 @@ def _app(name: str, raw: dict[str, Any]) -> AppConfig:
     capture = str(b.get("capture", "auto"))
     if capture not in ("auto", "on", "off"):
         raise ConfigError(f"{where}.browser.capture: must be auto|on|off, got {capture!r}")
-    browser = BrowserConfig(base_url=str(b["base_url"]), creds=creds, capture=capture)
+    # Optional remote cloud-browser CDP endpoint: literal `cdp_url` or secret `cdp_url_ref`.
+    if "cdp_url_ref" in b:
+        cdp_url: str | None = _resolve(b["cdp_url_ref"], f"{where}.browser.cdp_url_ref")
+    elif "cdp_url" in b:
+        cdp_url = str(b["cdp_url"])
+    else:
+        cdp_url = None
+    browser = BrowserConfig(
+        base_url=str(b["base_url"]), creds=creds, capture=capture, cdp_url=cdp_url
+    )
 
     env_raw = raw.get("environment", {}) or {}
     strategy = str(env_raw.get("strategy", "shared"))
@@ -103,6 +112,14 @@ def load_config(path: str | Path) -> AssertStateConfig:
     if not isinstance(raw, dict) or not isinstance(raw.get("apps"), dict) or not raw["apps"]:
         raise ConfigError("config: top level must have a non-empty `apps` mapping")
 
+    # `statistics` is per-contract and has no safe default (schema.py) — reject it here fail-closed
+    # rather than silently ignore a config-level block the operator might expect to apply.
+    if "statistics" in raw:
+        raise ConfigError(
+            "config: `statistics` belongs in the contract, not assertstate.yaml — "
+            "trials + pass_threshold have no safe default and are per-contract"
+        )
+
     redaction = raw.get("redaction") or {}
     redaction_mode = str(redaction.get("mode", "allowlist"))
     if redaction_mode != "allowlist":
@@ -114,7 +131,6 @@ def load_config(path: str | Path) -> AssertStateConfig:
     apps = {name: _app(name, body or {}) for name, body in raw["apps"].items()}
     return AssertStateConfig(
         apps=apps,
-        statistics_defaults=raw.get("statistics") or {},
         redaction_mode=redaction_mode,
         redaction_allow_fields=tuple(allow_raw),
         canonicalizer=str(raw.get("canonicalizer", "canon-v1")),

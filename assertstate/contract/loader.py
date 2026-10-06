@@ -31,6 +31,7 @@ from assertstate.domain.contract import (
     Contract,
     DbDeltaPolicy,
     DbExpect,
+    DestructiveActionPolicy,
     Eventually,
     ExternalPolicy,
     HttpMatch,
@@ -183,7 +184,13 @@ def _parse_settle(raw: Any, where: str) -> SettlementConfig:
         else None
     )
     return SettlementConfig(
-        mode=mode, queue=raw.get("queue"), timeout_s=timeout_s, max_wait_s=max_wait_s
+        mode=mode,
+        queue=raw.get("queue"),
+        timeout_s=timeout_s,
+        max_wait_s=max_wait_s,
+        run_id_col=(
+            _ident(raw["run_id_col"], f"{where}.settle.run_id_col") if "run_id_col" in raw else None
+        ),
     )
 
 
@@ -363,6 +370,53 @@ def _parse_touch_other_tenant(entry: dict[str, Any], idx: int) -> DbDeltaPolicy:
     )
 
 
+def _parse_destructive_action(entry: dict[str, Any], idx: int) -> DestructiveActionPolicy:
+    """`destructive_action` shorthand (FEATURE-SPEC §5.6) -> a compound trusted-state policy:
+    an irreversible op (a row leaving the `where` scope in the before/after diff — a delete, or an
+    update that moves it out of scope) must NOT occur unless an approval record is present in
+    trusted state (`approval_query` returns a row matching `approval_where`).
+
+    State-verified, never trace-verified (INV-8): both the destructive signal and the approval come
+    from independent reads of the application's own state, not the agent's claim.
+    """
+    where = f"forbid[{idx}].destructive_action"
+    body = entry["destructive_action"]
+    if not isinstance(body, dict):
+        raise ContractError(f"{where}: must be a mapping")
+    unknown = set(body) - {
+        "table",
+        "id_col",
+        "where",
+        "allow_full_scan",
+        "approval_query",
+        "approval_where",
+        "settle",
+    }
+    if unknown:
+        raise ContractError(f"{where}: unknown field(s) {sorted(unknown)}")
+    for req in ("table", "approval_query", "settle"):
+        if req not in body:
+            raise ContractError(f"{where}: `{req}` is required")
+    if not body.get("where") and not body.get("allow_full_scan"):
+        raise ContractError(
+            f"{where}: a `where` row-scope is required (a whole-table projection truncates -> "
+            "ERROR on large tables); set `allow_full_scan: true` only for small/isolated tables"
+        )
+    table = _ident(body["table"], f"{where}.table")
+    id_col = _ident(body.get("id_col", "id"), f"{where}.id_col")
+    query = f"SELECT {id_col} FROM {table}"
+    if body.get("where"):
+        query += f" WHERE {body['where']}"  # author-owned raw SQL (same trust as db_delta.query)
+    return DestructiveActionPolicy(
+        query=query,
+        settle=_parse_settle(body["settle"], where),
+        approval_query=str(body["approval_query"]),  # author-owned read-only SQL
+        where=body.get("where"),
+        approval_where=body.get("approval_where"),
+        key=id_col,
+    )
+
+
 def _parse_trajectory(raw: list[Any]) -> tuple[TrajectoryCheck, ...]:
     """`trajectory:` — required orderings of browser-observable requests (FEATURE-SPEC §3).
 
@@ -427,6 +481,8 @@ def _parse_forbid(raw: list[Any]) -> tuple[Any, ...]:
             out.append(_parse_duplicate(entry, idx))
         elif "touch_other_tenant" in entry:
             out.append(_parse_touch_other_tenant(entry, idx))
+        elif "destructive_action" in entry:
+            out.append(_parse_destructive_action(entry, idx))
         elif "http" in entry:
             out.append(_parse_http(entry, idx))
         elif any(k in _EXTERNAL_KINDS for k in entry):
@@ -434,7 +490,8 @@ def _parse_forbid(raw: list[Any]) -> tuple[Any, ...]:
         else:
             raise ContractError(
                 f"forbid[{idx}]: unsupported entry {sorted(entry)} "
-                "(db_delta | duplicate | touch_other_tenant | http | external_*)"
+                "(db_delta | duplicate | touch_other_tenant | destructive_action "
+                "| http | external_*)"
             )
     return tuple(out)
 

@@ -8,7 +8,7 @@
 
 > **Name `AssertState` (pkg `assertstate`).** Chosen after two collisions were verified and rejected: `agent-contracts` (taken — relari/vahwali) and `Groundline` (taken — usegroundline.com, live, same evidence/AI-trust space). `assertstate` verified clear on **GitHub org, npm, PyPI, and no live .com/.io** (2026-10-02). Only remaining step before public launch: a **trademark search** (non-blocking for internal docs).
 
-> **Document status: build specification for a WTP-gated OSS experiment** — NOT a validated SaaS opportunity. The problem is well-evidenced; willingness-to-pay is unproven. Build gated on §17.
+> **Document status: build specification for a directly-launched OSS engine.** The problem is well-evidenced; the engine ships to market directly (see §17 for the launch posture). Commercial (P3) features are a demand-driven roadmap, not pre-gated.
 
 **v2 changelog (from review, 2026-10-02):** fixed Wilson statistics (confidence + sided + realistic N); defined trial-outcome aggregation (PASS/FAIL/ERROR/SKIPPED/INCONCLUSIVE); added eventual-consistency polling; made `duplicate`/`touch_other_tenant` compile to explicit SQL; split `external_domain_navigation` into navigation vs request vs data-transfer; made `http_200_with_error_body` configurable; moved adapter selection out of the contract; added CI secret/threat model + evidence redaction; reframed state-isolation as experiment validity; scoped all "nobody/only/unique" claims to "none identified in the 10-competitor review"; added BreakingWeb as primary evidence.
 
@@ -16,7 +16,7 @@
 
 **Research basis:** competitor "context" boxes are grounded in the two 2026-10-02 feature-extraction passes (Relari, MS ASSERT, Promptfoo, Momentic, Giskard, LangSmith, Braintrust, Laminar, Playwright+Test Agents, OSS cluster — the cluster includes EvalView/state-eval/agent-eval-workbench/groundtruth, detailed in [AUDIT-3-agents.md](AUDIT-3-agents.md)). Claims of absence are scoped to **that reviewed set**, never universal.
 
-**Phase tags:** `[P0]` done · `[P1]` MVP · `[P2]` reach · `[P3]` commercial-only-if-WTP-proven.
+**Phase tags:** `[P0]` done · `[P1]` MVP · `[P2]` reach · `[P3]` commercial (post-launch, demand-driven).
 
 ---
 
@@ -198,7 +198,7 @@ For apps with no queryable backend. Never the primary signal — "DOM looks righ
 **(a) Settlement window — async writes must not escape the snapshot (the race is REDUCED by stability, CLOSED only by a bound/drain).** Writes are often async (queue → worker → retry → DB → read-replica). If the "after" snapshot is early, a slow retry worker writing a duplicate *after* it is a **false PASS**. **Honest limit:** `poll_until_stable` ("no change for N seconds") does **NOT** mathematically guarantee no future run-caused write — a retry at t=3 after 2s of stability still escapes. So a settlement policy is **correctness-valid only when the environment provides one of:**
 - **`bounded`** — a documented upper bound: *all writes causally triggered by the workflow become observable within `max_wait`*; snapshot taken after the bound. (First-slice default — use a disposable demo app whose worker you control and whose max propagation time you document.)
 - **`drain`** — wait until the workflow-owned job queue is empty (best for the demo env), then snapshot.
-- **`run_correlated`** (P2+) — tag writes with a `run_id` and diff by that, removing temporal inference entirely.
+- **`run_correlated`** (P2) — **shipped.** The app stamps a `run_id` onto its writes and exposes the drainable queue; completion is proven by draining the queue (so a late write cannot escape), then the delta is filtered to `run_id_col == this run's id` — removing temporal inference entirely, so a **concurrent other run's writes are excluded** (not just assumed away by a time window). Requires app cooperation (the `run_id` stamp + the queue); without it, use `drain`/`bounded`. `settle: { mode: run_correlated, run_id_col, queue, timeout }`; failure to prove completion → ERROR (fail-closed). **Limitation (run-id-column variant):** it attributes run-tagged INSERTs (duplicate-on-retry, concurrent inserts); it does NOT by itself attribute an UPDATE/DELETE of a *pre-existing* row unless the app re-stamps `run_id` on mutation — the fuller mutation/audit-record design (SYSTEM-DESIGN §6.3) removes that and remains a further extension.
 
 `poll_until_stable` is a *heuristic add-on*, never the sole guarantee. Evidence records `action_finished_at`, `settle_started_at`, `settle_completed_at`, `settle_policy`, and the stated propagation bound/drain signal:
 ```yaml
@@ -266,8 +266,16 @@ Fail on an action/tool outside the contract's allowed set (e.g., created an acco
 ### 5.5 Permission / authorization `[P1]`
 Post-action verification the agent stayed in scope. _(Promptfoo BOLA/BFLA is the adversarial counterpart.)_
 
-### 5.6 Destructive-action gating `[P2]`
-For irreversible ops, require an observed approval/confirmation step or fail.
+### 5.6 Destructive-action gating `[P2]` — shipped
+For irreversible ops, require an observed approval or fail. **State-verified, INV-8-safe:** the
+`forbid.destructive_action` shorthand fires when a destructive mutation is observed in the trusted
+before/after diff (a row matching `where` was REMOVED — a delete, or an update that moved it out of
+scope) **AND** no approval record is present in the trusted state (`approval_query` returns no row
+matching `approval_where`). Both the destructive signal and the approval are read from the app's
+OWN state — never the agent's claim (a trace-based approval gate would violate INV-8). Gating only
+under CAUSAL attribution, like `db_delta`; settlement failure → ERROR. Boolean approval filters
+belong in `approval_query` SQL; `approval_where` uses the comparator mini-language. Example:
+`contracts/examples/destructive-no-approval.yaml`.
 
 ---
 
@@ -321,8 +329,8 @@ Run PASSES iff: completeness holds **and** the **Wilson lower bound of the PASS 
 ### 8.4 Cost-aware sequential stopping `[P2]`
 Stop trials early once the interval provably clears/misses the threshold, to bound CI cost. _(A gate that's expensive AND flaky gets disabled — a real buyer objection.)_
 
-### 8.5 Regression / version comparison ≠ the acceptance gate `[P2, spec now]`
-The Wilson lower bound answers *"is this run's true pass rate ≥ threshold?"* — it does **not** test whether version B is significantly worse than version A, and **you may not infer that from two Wilson intervals overlapping**. Regression and model-swap comparisons require a distinct method: a **two-sample difference-in-proportions test with a CI** (or, when the same scenarios run against both versions, a **paired test, e.g. McNemar**, since the observations are not independent across versions). Specified now, implemented in P2; do not claim "statistical regression detection" using the acceptance-gate math.
+### 8.5 Regression / version comparison ≠ the acceptance gate `[P2, shipped]`
+The Wilson lower bound answers *"is this run's true pass rate ≥ threshold?"* — it does **not** test whether version B is significantly worse than version A, and **you may not infer that from two Wilson intervals overlapping**. Regression and model-swap comparisons require a distinct method: a **two-sample difference-in-proportions test with a CI** (or, when the same scenarios run against both versions, a **paired test, e.g. McNemar**, since the observations are not independent across versions). **Shipped (`stats/compare.py`):** both the independent two-proportion test (`assertstate compare`, the default) and the paired McNemar test (`assertstate compare --paired`, matched by trial index — the correct test for a model/version swap on identical scenarios). The acceptance-gate (Wilson) math is never used for this.
 
 ---
 
@@ -343,7 +351,10 @@ If trials aren't isolated, trial 2 sees trial 1's payment, trial 3 retries it �
 ### 9.4 Network capture (CDP/proxy) `[P1]` — with a stated boundary
 Capture **browser-observable** requests/responses within the configured instrumentation boundary (CDP or MITM proxy). **Not** "every request" — Playwright documents that Service-Worker traffic can be missed unless configured; the boundary is declared in evidence and the docs.
 
-### 9.5 Cloud/hosted browser `[P3]` — defer to Browserbase/Steel.
+### 9.5 Cloud/hosted browser `[P3]`
+A "cloud browser" is just headless Chromium on remote infra, reached over a CDP endpoint — the same binary the local adapter already drives. It is therefore a **replaceable remote-CDP adapter**, not an engine change (the adapter slot is `module:attr`, chosen outside the contract, §2.4). **Not needed for the OSS launch** — the browser runs wherever the user's own CI runs it (local/container Chromium). It only matters for a *hosted* product where we run the agent for the customer. **Build-vs-buy (by ops appetite):** self-host a browser pool (own the autoscale / ephemeral-profile / zombie-Chrome-cleanup / isolation ops) **or** integrate a managed provider (e.g. Browserbase/Steel). Self-hosting keeps the customer's agent traffic and staging credentials on our own infra — which fits the security-grade/redacted-evidence thesis better than routing them through a third party. A managed provider is faster to integrate but adds per-session cost + lock-in and sends that traffic off-box.
+
+**Shipped — the remote-CDP *adapter* (the thin client):** set `browser.cdp_url` (or secret `cdp_url_ref: env:VAR`) in `assertstate.yaml` and the agent **attaches** to that operator-controlled browser over CDP instead of launching local Chrome — provider-agnostic, no vendor SDK, no third-party key for the self-hosted case. **Capture caveat (honest):** because the adapter attaches (does not launch), it cannot inject `--proxy-server`; trusted capture for a remote browser must be configured **operator-side at that browser's launch** (point it at the parent proxy). If it is not, the parent records nothing and the http/external/trajectory policies stay **non-gating** (fail-closed, never a false pass). **Still deferred (the hosted-infra piece, not the adapter):** the browser *fleet* — pooling, autoscale, pre-warming, zombie cleanup, the secure CDP gateway.
 
 ---
 
@@ -351,7 +362,7 @@ Capture **browser-observable** requests/responses within the configured instrume
 
 - **Exit-code gate `[P1]`** — `assertstate run` → 0 all-pass / non-zero on fail/inconclusive.
 - **GitHub Action `[P1, shipped]`** — a composite action (`action.yml`) that runs a contract through the trusted CLI and gates the PR. It never executes the agent itself or reinterprets the verdict. Inputs: `contract` (required), `config`, `app`, `adapter`, `scenario`, `trials`, `sandbox`, `run-id`, `baseline`, `confidence`, `allow-fork`. It **preserves exit codes** (0 PASS · 1 FAIL · 2 usage · 3 INCONCLUSIVE · 4 ERROR-dominated — never collapsed), posts a **redacted** step summary via `assertstate report --format summary` (reusing evidence redaction — no raw SQL/DSN/row data), and **uploads the evidence bundle** (`run.json`, `trials/`, `manifest.json`, `evidence.zip`, `contract.yaml`, `junit.xml`, `report.html`) as a CI artifact. **Required status check:** give the job a stable name (the example uses `assertstate`) and add it to branch protection; the Action does not administer branch protection. **Fork safety:** a fork PR with a `--config` (oracle-secret) run **fails closed** (ERROR/exit 4) unless `allow-fork: true`; the secret-free built-in demo runs on forks. **Distribution:** the Action self-installs AssertState from its own checked-out source (`$GITHUB_ACTION_PATH`) when it is not already importable, so **`uses: your-org/assertstate@<ref>` works cross-repo with no registry/credential** (`install: skip` opts out); `uses: ./` works in-repo. A published package (PyPI) remains a future convenience, not a requirement (§13). See the example at `.github/workflows/assertstate-example.yml`.
-- **PR/merge gating `[P1]`**, **regression baselines `[P1]`**, **model-swap diffing `[P2]`** — both use the **two-sample/paired comparison of §8.5**, NOT Wilson-interval overlap, to decide "significantly worse."
+- **PR/merge gating `[P1]`**, **regression baselines `[P1]`**, **model-swap diffing `[P2]`, shipped** (`compare --paired` for same-scenario swaps), **regression history** (`assertstate history` — local trend + latest-vs-prior gate) — all use the **two-sample/paired comparison of §8.5**, NOT Wilson-interval overlap, to decide "significantly worse."
 
 ### 10.1 CI threat model `[P1]` — required before CI ships
 The CI path (PR → Action → agent → staging → authed API → DB) is an attack surface. A malicious PR can alter contracts/adapters/queries/config/test-data.
@@ -359,6 +370,11 @@ The CI path (PR → Action → agent → staging → authed API → DB) is an at
 - **DB account:** SELECT-only, restricted to specific schema/views, statement timeout, row/result limits. (Read-only still leaks data without these.)
 - **Network:** default-deny egress + explicit app allowlist in the CI runner.
 - Contract/query changes in a PR run only in an unprivileged sandbox until a maintainer approves.
+
+**Enforced by the shipped code vs operator-configured (be honest about the line):**
+- **Enforced in the Action** — fork fail-closed: a fork PR with a `--config` (oracle-secret) run exits 4 (ERROR) unless `allow-fork: true` (`action.yml`; tested). The adapter also runs out-of-process in a locked-down container by default (`--sandbox auto`, INV-7).
+- **Enforced in the engine** — the oracle role's write-denial is *verified* fail-closed at run setup (`DbProbe.verify_read_only` attempts a write and requires it to be rejected → else trial ERROR; `config/environment.py`), plus a per-connection `default_transaction_read_only` and a row cap.
+- **Operator-configured (not codified)** — default-deny network egress + app allowlist in the CI runner, and the finer DB hardening (schema/view restriction, statement timeout, result limits). AssertState proves "cannot write"; it does not administer the runner's firewall or the DB grants.
 
 ---
 
@@ -377,14 +393,14 @@ Per-run cost + wall-time capture. `budget.max_seconds` is harness-measured (pare
 
 ## 13. Feature area K — Delivery / business
 - **OSS core (Apache-2.0) `[P1]`**: CLI, contract format, Browser Use adapter, DB/API probes, side-effect checks, Wilson verdict, GitHub Action, JUnit/HTML + redacted evidence bundle, demo app + contracts.
-- **Paid, only if WTP proven `[P3]`**: hosted parallel runs, regression history, **signed evidence reports** for security questionnaires, SSO/RBAC, cloud browsers.
+- **Commercial `[P3]` (post-launch, demand-driven)**: hosted parallel runs, **signed evidence reports** for security questionnaires, SSO/RBAC, cloud browsers. _(Regression **history** is now shipped locally — `assertstate history` reads the evidence store, shows the pass-rate trend, and gates on a latest-vs-prior regression; a hosted/managed history remains P3.)_
 - Permissive license so a future hosted layer is unencumbered. _(OSS→paid conversion is ~2–5%; treat paid as unproven.)_
 
 ---
 
 ## 14. Feature area L — Config & CLI
 - `assertstate validate <contract>` `[P0 done]` · `run <contract…> --adapter <x>` `[P1]` · `report <run>` `[P1]` · `init` `[P2]`.
-- `assertstate.yaml`: named AppTargets (base_url, **read-only** db_dsn, api_base, auth), allow/deny domain lists, default `statistics`, canonicalizer version, reset hook.
+- `assertstate.yaml`: named AppTargets (base_url, **read-only** db_dsn, api_base, auth, optional `cdp_url`/`cdp_url_ref` for a remote cloud browser §9.5, `capture` mode), canonicalizer version, reset hook, redaction allowlist. _(Allow/deny domain lists and `statistics` are NOT config fields — domain lists live per-contract on `external_*` policies; `statistics` is per-contract and self-contained, with no safe default.)_
 - Secrets via env; **never** persisted to evidence (credentials/raw traces git-ignored + redacted).
 
 ---
@@ -403,14 +419,16 @@ Another browser agent / faster JEV · generic LLM eval & leaderboards (LangSmith
 
 **P1 (full MVP), after the slice proves out:** add **network capture (CDP)** + the 200-error / external-activity checks, API probe, typed-comparator set, GitHub Action + threat model, JUnit/HTML, eventual-consistency polling, and the seed contracts that the P1 feature set supports (8 ship: scenarios 1–6, 8, 9).
 **P2:** Stagehand/Playwright-MCP/JEV adapters, model-swap diffing + Wilson-interval regression (scenario 10), injection scenarios (scenario 7), action-integrity scenarios (11–12), richer evidence, sequential stopping.
-**P3 (gated on WTP):** hosted runs, regression history, signed evidence reports, SSO/RBAC.
+**P3 (post-launch, demand-driven):** hosted runs, regression history, signed evidence reports, SSO/RBAC.
 
 ---
 
-## 17. The WTP gate (strengthened) — build is blocked until this passes
-Not "3–5 people say they'd pay." Require, before heavy P1:
-- **3–5 qualified target teams** (shipping write-capable browser agents) **+ a specific use case + a specific price accepted + a named buyer/owner + at least ONE paid pilot or deposit.**
-The research supports "real problem" far more than "validated SaaS." Resolve WTP with conversations (see [outreach.md](outreach.md)), not more desk research.
+## 17. Go-to-market — launch directly
+No pre-launch willingness-to-pay gate. The OSS engine + GitHub Action ship directly to market: publish
+the thesis write-up and the wedge demo, put it in front of teams shipping write-capable browser agents,
+and let real adoption steer what gets built next. Commercial (P3) features are a **demand-driven
+roadmap** — built when inbound pull for them appears, not blocked behind a validation checkpoint. See
+[outreach.md](outreach.md) for the launch plan, channels, wedge demo, and messaging.
 
 ---
 
@@ -422,12 +440,12 @@ The *primitive* is not ours: backend-state grading exists in research (BreakingW
 ---
 
 ## 19. Risks (from audit + review)
-Name taken (rename) · WTP unproven · 1-week Playwright+DB DIY substitute (product must be materially less work than DIY) · **Playwright absorption** (already owns CDP/assertions/traces/Action + agentic authoring/healing — keep the runner replaceable; compete only on the oracle+policy+statistics+evidence layer) · **MS ASSERT** one grounding step away · state-isolation = validity risk · small buyer pool.
+Name taken (rename) · 1-week Playwright+DB DIY substitute (product must be materially less work than DIY) · **Playwright absorption** (already owns CDP/assertions/traces/Action + agentic authoring/healing — keep the runner replaceable; compete only on the oracle+policy+statistics+evidence layer) · **MS ASSERT** one grounding step away · state-isolation = validity risk · small buyer pool.
 
 ---
 
 ## 20. Problem evidence (primary)
-**Narrative (honest framing):** the thesis is NOT "nobody can grade backend state." It is: *research increasingly shows browser agents report success despite failing to achieve the intended backend state; existing benchmarks prove the grading technique; AssertState tests whether that technique can be turned into a reusable, deterministic, framework-neutral acceptance harness for real write-capable agent workflows — and whether teams will pay for that.* The open question is packaging + WTP, not technical novelty.
+**Narrative (honest framing):** the thesis is NOT "nobody can grade backend state." It is: *research increasingly shows browser agents report success despite failing to achieve the intended backend state; existing benchmarks prove the grading technique; AssertState turns that technique into a reusable, deterministic, framework-neutral acceptance harness for real write-capable agent workflows.* The open question is packaging + distribution, not technical novelty.
 
 - **BreakingWeb** (arXiv 2609.35814, 2026-09-20): 519 clean/intervention task pairs, 7 self-hosted environments, 29 intervention families, outcome-based (backend) grading with positive obligations + invariants; **~75% of evaluated agent failures ended with the agent declaring success though the required change never happened.** Primary, recent, independent, outcome-graded — the strongest validation of "trajectory ≠ application truth." (Also the clearest prior art that backend-state grading itself is established; see §0 disclosure.)
 - Browser Use #5955 (structured `done`→success), #1763 (lost goal), #56 (unrequested actions); jev-ultrafast #158 (200-with-error-body), #120, #132; jev README ("DONE requires independent outcome verification").

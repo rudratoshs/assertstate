@@ -1,0 +1,16 @@
+# Example: run_correlated settlement (FEATURE-SPEC §5a, P2). The app stamps `run_id` onto its
+# writes and exposes the drainable `payment_jobs` queue; completion is proven by draining it, then
+# the delta is filtered to THIS run's rows — so a concurrent OTHER run's writes are excluded with
+# no temporal inference. Requires app cooperation (the run_id stamp + the queue).
+task: "Pay the invoice bill-december exactly once"
+app: demo
+forbid:
+  - db_delta:
+      query: "SELECT id, run_id FROM payments WHERE invoice='bill-december'"
+      max_added: 1                       # a second row for THIS run = a duplicate
+      settle:
+        mode: run_correlated
+        run_id_col: run_id               # the column the app stamps with the run id
+        queue: payment_jobs              # drained to prove completion
+        timeout: 10s
+statistics: { trials: 5, pass_threshold: 0.8, min_valid_trials: 5, max_error_rate: 0.2 }

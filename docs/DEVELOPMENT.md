@@ -9,7 +9,7 @@ Implementation guide for the **AssertState P0 Core Engine**, derived from — an
 ## Source-of-truth order
 1. **[FEATURE-SPEC.md](FEATURE-SPEC.md) v2.3** — authoritative for product behavior, contract semantics, acceptance criteria, correctness requirements.
 2. **[SYSTEM-DESIGN.md](SYSTEM-DESIGN.md) v2.2** — authoritative for architecture, component boundaries, trust model, lifecycle, security, phase boundaries. *(The source prompt cited v2.1; v2.2 is the current freeze-ready version and a strict superset — it adds the shared-staging gating rule and the boundary proof test. Built against v2.2.)*
-3. **This file** — implementation instructions derived from (1) and (2). It does **not** redesign the product, reopen frozen decisions, or invent hosted-platform/UI/tenancy/REST-control-plane features (all deferred until WTP, FEATURE-SPEC §17).
+3. **This file** — implementation instructions derived from (1) and (2). It does **not** redesign the product, reopen frozen decisions, or invent hosted-platform/UI/tenancy/REST-control-plane features (all post-launch / demand-driven, FEATURE-SPEC §17).
 
 Anything not fixed by (1)/(2) is labelled **`OPEN IMPLEMENTATION DECISION`** with the smallest reasonable choice — never silently promoted to a product requirement. Any contradiction between (1) and (2) is labelled **`SPEC MISMATCH`** and reported in §41, never silently fixed here.
 
@@ -25,7 +25,7 @@ Anything not fixed by (1)/(2) is labelled **`OPEN IMPLEMENTATION DECISION`** wit
 - **What this is:** the P0 build blueprint. It inherits all behavior from FEATURE-SPEC v2.3 and all structure from SYSTEM-DESIGN v2.2.
 - **Frozen (do not reopen):** the trust model (real OS process boundary), the external-oracle verdict, deterministic scoring, the `db_delta` settlement contract, Wilson + completeness, fail-closed evidence, the phase boundaries.
 - **Originally P0-deferred; SINCE SHIPPED at P1** (code authoritative — FEATURE-SPEC §16): BrowserObservations/network capture, CDP/proxy instrumentation, `bounded` settlement, HTTP policies, external-activity policies, API oracle, GitHub Action, HTML reporting.
-- **Still deferred:** Stagehand/Playwright-MCP/JEV adapters, `run_correlated`, regression/model comparison, hosted infra, UI, users/orgs/roles.
+- **Still deferred:** Stagehand/Playwright-MCP/JEV adapters, regression/model comparison, hosted infra, UI, users/orgs/roles. (`run_correlated` settlement + `destructive_action` gating now SHIPPED, P2.)
 - **Definition of "P0":** "P0" here = the **first validation slice** (SYSTEM-DESIGN §19 / FEATURE-SPEC §16), the next implementation milestone. *(FEATURE-SPEC's `[P0 done]` phase tag refers only to the already-built contract loader + `validate`; everything else in this file's P0 is net-new.)*
 - **"Done" for P0:** see §37 — mechanically: every acceptance-matrix row (§35) and every adversarial test (§36) passes, with deterministic verdicts and redacted reproducible evidence.
 
@@ -34,7 +34,7 @@ Python core · Browser Use adapter (out-of-process) · Chromium · PostgreSQL ·
 
 ### Scope beyond the original P0 slice
 Shipped at P1 (code authoritative): BrowserObservations/network capture · CDP/proxy · `bounded` settlement · HTTP policy · external policies · API oracle · GitHub Action · HTML.
-Still deferred (§40): other adapters · `run_correlated` · hosted infra · UI · users/orgs/roles.
+Still deferred (§40): other adapters · hosted infra · UI · users/orgs/roles.
 
 ---
 
@@ -193,7 +193,7 @@ class DbExpect:            # expect.db — final-state read (§22)
 
 @dataclass(frozen=True)
 class SettlementConfig:    # §18 / FEATURE-SPEC §5
-    mode: str                          # "drain" (P0) + "bounded" (P1, SHIPPED). "run_correlated" parsed, rejected-as-unsupported (P2).
+    mode: str                          # "drain" (P0) + "bounded" (P1) + "run_correlated" (P2) — all SHIPPED. run_correlated needs run_id_col + queue + timeout (app-cooperation); a non-runnable mode fails closed to ERROR.
     queue: str | None                  # drain: workflow-owned queue name
     timeout_s: float | None            # drain timeout → ERROR on expiry
 
@@ -754,9 +754,9 @@ These are deferred features (§40), not defects.
 P1  BrowserObservations + RunMeasurements (instrumentation/) → enables bounded settlement,
     HTTP/external policies (policy_engine/ slots), API oracle (oracle/api_probe/), trusted
     step/cost budget gating; GitHub Action; JUnit/HTML reporters.
-P2  additional adapters (Stagehand/Playwright-MCP/JEV) behind the same runner; run_correlated
-    settlement (mutation/audit record); regression/model comparison (two-sample/McNemar).
-P3  hosted platform (users/orgs/roles, REST control plane, physical schema, UI) — gated on WTP.
+P2  additional adapters (Stagehand/Playwright-MCP/JEV) behind the same runner; regression/model
+    comparison (two-sample/McNemar). (run_correlated settlement + destructive_action gating SHIPPED.)
+P3  hosted platform (users/orgs/roles, REST control plane, physical schema, UI) — post-launch, demand-driven.
 ```
 
 ---

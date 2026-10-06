@@ -2,7 +2,7 @@
 
 Engineering design for the **core verification engine** specified in [FEATURE-SPEC.md](FEATURE-SPEC.md) (v2.3). This is **how the engine is built**; the feature doc is **what it does**. Where they disagree, FEATURE-SPEC wins.
 
-> **Scope: the OSS core engine only.** The **hosted platform** — users/orgs/roles/tenancy, the REST API, the physical control-plane database schema, and the UI/UX — is **NOT designed here**; it is deferred until WTP is validated (§20). Calling this the "whole system" would be dishonest: it is the acceptance-engine architecture, which is correctly serverless today.
+> **Scope: the OSS core engine only.** The **hosted platform** — users/orgs/roles/tenancy, the REST API, the physical control-plane database schema, and the UI/UX — is **NOT designed here**; it is a post-launch, demand-driven roadmap item (§20). Calling this the "whole system" would be dishonest: it is the acceptance-engine architecture, which is correctly serverless today.
 
 > **v2 changelog (post-review, 2026-10-02):** fixed the adapter↔oracle trust-boundary leak (adapter no longer receives oracle credentials); split untrusted `AgentTrace` from trusted `BrowserObservations`/`RunMeasurements`; made snapshot truncation fail-closed + PK-uniqueness checked; made the API oracle explicitly read-only; tightened `drain`, the settlement causal start-point, and `run_correlated` (mutation/audit record); corrected the Wilson/correlation wording + empty-N/param guards; added the full Policy Engine (forbidden_action/authorization/destructive/external); scoped transactional-rollback isolation (app must propagate the TX); added run provenance metadata + local artifact store; froze the stack (Python core / Browser Use / Postgres / Chromium); retitled Core Engine + deferred the hosted product.
 
@@ -22,7 +22,7 @@ Engineering design for the **core verification engine** specified in [FEATURE-SP
 - Causal attribution only under an **isolated environment**; shared staging = *observed delta*, labeled.
 - **Oracle credentials never reach the untrusted agent** — enforced by a real process/container boundary, not just logical separation (§2).
 - Oracle probes are **observational by contract** (read-only DB role; API via read-only service identity + endpoint allowlist, GET/HEAD as default restriction).
-- Settlement is correctness-valid only as **`drain` (P0)** / **`bounded` with trusted causal timing (P1, shipped)** / **`run_correlated` (P2)**; an unprovable settlement is **ERROR, never FAIL**.
+- Settlement is correctness-valid only as **`drain` (P0)** / **`bounded` with trusted causal timing (P1, shipped)** / **`run_correlated` (P2, shipped — run-id-column variant)**; an unprovable settlement is **ERROR, never FAIL**.
 - A **truncated** snapshot can never produce PASS.
 
 **Non-goals:** browser engine, LLM eval/leaderboards, trace viewer/replay, red-team platform, runtime action-blocking (FEATURE-SPEC §15).
@@ -103,7 +103,7 @@ Verifier
       ├── external_request / external_top_level_navigation / external_data_transfer  [P1]
       ├── forbidden_action    # tool/action outside allowed set  [P1] *
       ├── authorization       # stayed in scope                  [P1] *
-      └── destructive_action  # approval observed before irreversible op  [P2]
+      └── destructive_action  # approval observed (in trusted state) before irreversible op  [P2, shipped]
 ```
 > \* `forbidden_action` / `authorization` are **semantics, not separate policy kinds**. They are
 > realized by `db_delta` (an out-of-scope or wrong-tenant write — seed contracts 06 and 04) and by
@@ -218,7 +218,7 @@ Per `db_delta.query`, the result set keyed by the declared PK/`key:`, via the re
 `diff` is only valid after causally-complete writes are observable. Each mode and the phase it is valid in:
 - **`drain`** (**P0, the only correctness-valid mode in the first slice**) — observes **queue/worker state directly**, so it needs no causal-start timestamp and therefore no browser instrumentation. Defined precisely: **(a) no queued workflow-owned jobs AND (b) no in-flight/active workflow-owned jobs AND (c) no producer can still enqueue work for this run AND (d) all downstream writes covered by the drain contract are observable.** An "empty queue" alone is insufficient.
 - **`bounded`** (**P1, SHIPPED — needs trusted instrumentation**) — wait a documented `max_wait` that covers **app + worker + read-replica propagation**, **starting from the last causal browser-originated request completion** (`BrowserObservations.last_causal_request_completed_at`), NOT from "agent said DONE." Because that causal clock comes from trusted instrumentation (§3.8), `bounded` is only correctness-valid once instrumentation is present; the original P0 slice had no such source and used `drain`, and P1 added the trusted parent-owned capture that supplies it. Without the anchor, `bounded` fails closed to ERROR. The bound guarantee is an environmental assumption recorded in evidence.
-- **`run_correlated`** (P2+) — the long-term-correct design. Does NOT rely on a `run_id` column on new rows (that misses UPDATE/DELETE of pre-existing rows). Instead uses an **application mutation/audit record** `{mutation_id, run_id, table, pk, op(INSERT|UPDATE|DELETE), before, after, ts}`; the diff is computed from mutations tagged with this run, removing temporal inference. Requires app cooperation.
+- **`run_correlated`** (P2) — **shipped as the run-id-column variant:** the app stamps a `run_id` onto its writes (`settle.run_id_col`), completion is proven by draining the workflow queue, and the before/after delta is filtered to this run's rows — removing temporal inference, so a concurrent other run is excluded. **Documented limitation:** the run-id-column variant correctly attributes run-tagged INSERTs (duplicate-on-retry, concurrent inserts); it does NOT by itself attribute an UPDATE/DELETE of a *pre-existing* row unless the app re-stamps `run_id` on mutation. The long-term-correct design — an **application mutation/audit record** `{mutation_id, run_id, table, pk, op(INSERT|UPDATE|DELETE), before, after, ts}` diffed by run — removes that limitation and remains a further extension. Both require app cooperation.
 - `poll_until_stable` — optional heuristic layered on the above, **never the sole guarantee**.
 - **Settlement failure is ERROR, never FAIL.** If the required guarantee cannot be established — drain cannot be verified, the `bounded` causal-start source is absent, or settlement times out — the trial is **ERROR** ("could not establish correctness"), never FAIL. FAIL is reserved for "the workflow actually violated the contract."
 
@@ -315,7 +315,7 @@ assertstate/
   contract/      # loader+schema+validate [P0 done]
   config/        # OracleTarget, BrowserTarget, secrets, redaction policy
   orchestrator/  # trial loop, outcome classification, RunMetadata capture
-  adapters/      # browser_use/ (p1), stagehand/ playwright_mcp/ jev/ (p2)
+  adapters/      # base (Protocol) + browser_use_adapter.py (p1) + demo/http/noop + runner/child boundary; stagehand/playwright-mcp/jev (p2, not built)
   oracle/        # db_probe(ro), api_probe(ro), snapshot(+guards), delta, settlement
   instrumentation/ # browser_observations (cdp/proxy), run_measurements
   verifier/      # expect, policy_engine(db_delta/http/external/forbidden/authz/destructive), comparators
@@ -380,10 +380,10 @@ Orchestrator        Env Mgr     Adapter/Browser(UNTRUSTED)   Instrumentation   O
 ---
 
 ## 19. First-slice design (what gets built first)
-Minimal set to prove the thesis (FEATURE-SPEC §16): `contract`(done) + `orchestrator` (launching the untrusted agent **out-of-process**, §2) + `adapters/browser_use` + `oracle/{db_probe(ro), snapshot(+guards), delta, settlement(drain only)}` + `verifier/{expect, db_delta}` + `stats/{wilson, completeness, guards}` + `env/{postgres template-restore, seed}` + `evidence/{redact(fail-closed), json, provenance}` + artifact store + exit code.
+Minimal set to prove the thesis (FEATURE-SPEC §16): `contract`(done) + `orchestrator` (launching the untrusted agent **out-of-process**, §2) + `adapters/browser_use_adapter` + `oracle/{db_probe(ro), snapshot(+guards), delta, settlement(drain only)}` + `verifier/{expect, db_delta}` + `stats/{wilson, completeness, guards}` + `env/{postgres template-restore, seed}` + `evidence/{redact(fail-closed), json, provenance}` + artifact store + exit code.
 - **The original P0 slice used `drain` as the only correctness-valid settlement mode** (it observes queue state and needs no causal clock). `bounded` shipped at P1 once the trusted browser instrumentation that supplies its causal start-point was added; absent that anchor it fails closed to ERROR. This resolves the former P0 settlement contradiction.
-- **Deferred past the original P0 slice, SINCE SHIPPED at P1:** BrowserObservations/network capture (and therefore `bounded`), http/external policies, API oracle, GitHub Action, HTML. (`forbidden_action`/`authorization` are realized via `db_delta`+external/http, not separate kinds — §3.9.) **Still deferred:** other adapters (Stagehand/Playwright-MCP/JEV), `run_correlated`, cross-version/cross-agent comparison.
-- **Phasing:** **P0** proves oracle + `db_delta` + `drain` settlement + isolation. **P1 (shipped)** added trusted instrumentation → `bounded` + http/external policies + API oracle + container sandbox on the run path. **P2** adds `run_correlated` + cross-version/cross-agent comparison.
+- **Deferred past the original P0 slice, SINCE SHIPPED at P1:** BrowserObservations/network capture (and therefore `bounded`), http/external policies, API oracle, GitHub Action, HTML. (`forbidden_action`/`authorization` are realized via `db_delta`+external/http, not separate kinds — §3.9.) **Still deferred:** other adapters (Stagehand/Playwright-MCP/JEV), cross-version/cross-agent comparison. (`run_correlated` settlement + `destructive_action` gating SHIPPED, P2.)
+- **Phasing:** **P0** proves oracle + `db_delta` + `drain` settlement + isolation. **P1 (shipped)** added trusted instrumentation → `bounded` + http/external policies + API oracle + container sandbox on the run path. **P2** adds `run_correlated` settlement + `destructive_action` gating (both shipped) + cross-version/cross-agent comparison (deferred).
 - **Demo app:** tiny Postgres-backed payment workflow + a **controllable async retry worker** (so `drain` has a real, observable queue to settle against).
 - **Acceptance (functional):** inject wrong-value / missing / duplicate-on-slow-retry / cross-tenant-INSERT / cross-tenant-UPDATE failures → AssertState FAILs each (agent reports DONE), PASSes the correct run, reproducibly over N trials with a reported Wilson interval, `attribution: causal`. This is the empirical validation.
 - **Acceptance (security — the boundary proof test):** a malicious test adapter attempts to read `ORACLE_DSN`/oracle creds, the trusted artifact dir, the trusted IPC socket, the CDP/debug port, and trusted-process paths → **every attempt fails**. Until this passes, the §2 boundary is "designed," not "enforced."
@@ -391,7 +391,7 @@ Minimal set to prove the thesis (FEATURE-SPEC §16): `contract`(done) + `orchest
 ---
 
 ## 20. Platform / Hosted product design — DEFERRED (not yet designed)
-The hosted product (`[P3]`, gated on WTP) is **out of scope for this doc** and explicitly not designed yet. When WTP is validated, it will need its own design for:
+The hosted product (`[P3]`, post-launch / demand-driven) is **out of scope for this doc** and not designed yet. When it is built, it will need its own design for:
 - **Identity & tenancy:** User / Organization / Project / Role / Membership / ServiceAccount.
 - **REST API:** `POST /projects/:id/app-targets`, `POST /contracts`, `POST /runs`, `GET /runs/:id`, `GET /runs/:id/evidence`, … with auth, error model, idempotency, pagination.
 - **Control-plane physical schema:** actual PostgreSQL tables/columns/PKs/indexes/FKs, migrations, retention, evidence/object storage.

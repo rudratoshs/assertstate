@@ -77,6 +77,9 @@ class ConfiguredEnvironment:
         browser_target: dict[str, Any] = {"base_url": app.browser.base_url}
         if app.browser.creds is not None:
             browser_target["creds"] = app.browser.creds
+        if app.browser.cdp_url is not None:
+            # Agent-side: the adapter ATTACHES to this operator-controlled remote browser (§9.5).
+            browser_target["cdp_url"] = app.browser.cdp_url
 
         # Parent-owned trusted capture (the agent never gets this object; INV-8).
         capture: TrustedNetworkCapture | None = None

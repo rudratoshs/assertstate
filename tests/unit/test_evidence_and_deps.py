@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
 import inspect
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -196,16 +194,33 @@ def test_bundle_refuses_to_overwrite_existing_run(tmp_path: Path) -> None:
 
 
 def test_verifier_imports_no_model_client() -> None:
-    for mod in (
-        "assertstate.verifier.expect.evaluator",
-        "assertstate.verifier.policy_engine.db_delta",
-        "assertstate.verifier.policy_engine.http",
-        "assertstate.verifier.policy_engine.external",
-        "assertstate.stats.aggregate",
-    ):
-        importlib.import_module(mod)
-    forbidden = {"openai", "anthropic", "browser_use"}
-    assert not (forbidden & set(sys.modules)), "verifier/stats must not pull a model client"
+    # Checked in a FRESH interpreter: importing the verifier/stats must not transitively pull a
+    # model client. A same-process sys.modules check is order-dependent (a sibling test that imports
+    # browser_use for mocking would pollute it), so isolate it in a subprocess — the honest test.
+    import subprocess
+    import sys as _sys
+
+    code = (
+        "import importlib, sys\n"
+        "for m in ("
+        "'assertstate.verifier.expect.evaluator',"
+        "'assertstate.verifier.policy_engine.db_delta',"
+        "'assertstate.verifier.policy_engine.http',"
+        "'assertstate.verifier.policy_engine.external',"
+        "'assertstate.verifier.policy_engine.destructive',"
+        "'assertstate.verifier.policy_engine.sequence',"
+        "'assertstate.stats.aggregate'):\n"
+        "    importlib.import_module(m)\n"
+        "bad = {'openai','anthropic','browser_use'} & set(sys.modules)\n"
+        "assert not bad, f'verifier/stats pulled a model client: {bad}'\n"
+    )
+    proc = subprocess.run(
+        [_sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_inv8_verdict_has_no_agent_claim_input() -> None:

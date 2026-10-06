@@ -51,6 +51,33 @@ def test_capture_field_rejects_unknown() -> None:
         load_config(_write(raw))
 
 
+def test_cdp_url_literal_parsed() -> None:
+    raw = _base()
+    raw["apps"]["staging"]["browser"]["cdp_url"] = "ws://browser.internal:9222/devtools/browser/x"
+    cfg = load_config(_write(raw))
+    assert cfg.app("staging").browser.cdp_url == "ws://browser.internal:9222/devtools/browser/x"
+
+
+def test_cdp_url_ref_resolved_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLOUD_BROWSER_WSS", "wss://cb.example/devtools?token=sekret")
+    raw = _base()
+    raw["apps"]["staging"]["browser"]["cdp_url_ref"] = "env:CLOUD_BROWSER_WSS"
+    cfg = load_config(_write(raw))
+    assert cfg.app("staging").browser.cdp_url == "wss://cb.example/devtools?token=sekret"
+
+
+def test_cdp_url_default_none() -> None:
+    assert load_config(_write(_base())).app("staging").browser.cdp_url is None
+
+
+def test_config_rejects_top_level_statistics() -> None:
+    # statistics is per-contract (no safe default); a config-level block fails closed, not ignored.
+    raw = _base()
+    raw["statistics"] = {"trials": 20, "pass_threshold": 0.9}
+    with pytest.raises(ConfigError, match=r"`statistics` belongs in the contract"):
+        load_config(_write(raw))
+
+
 def test_env_ref_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_RO_DSN", "postgresql://ro@/real")
     monkeypatch.setenv("APP_LOGIN", "user:pw")
