@@ -437,7 +437,7 @@ apps:
       # capture: auto                           # auto (http:// only) | on | off — trusted network
       #                                         # capture for http/external/trajectory policies (§3)
       # cdp_url_ref: "env:CLOUD_BROWSER_WSS"    # attach to a remote cloud browser over CDP (§9.5)
-      #                                         # instead of launching local Chrome; literal cdp_url ok
+      #                                         # instead of local Chrome; literal cdp_url also ok
     oracle:
       db_dsn: "env:ORACLE_DSN"                  # MUST resolve to a READ-ONLY role
       # api_base: "https://staging.example.com/api"   # optional read-only API oracle (GET/HEAD)

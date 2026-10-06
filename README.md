@@ -12,31 +12,85 @@ ground truth the agent cannot see or fake — not from the agent's success claim
 
 License: **Apache-2.0**.
 
-> **Status (honest): P0 in progress — NOT done.** Implemented and tested against a real
-> PostgreSQL: the contract loader/validator, the read-only oracle probe, snapshot
-> fail-closed guards, and the `db_delta` diff + safe predicate engine. **Not yet built:**
-> the demo worker, settlement/drain, the orchestrator, the verifier/statistics/evidence
-> pipeline, and the out-of-process agent adapter. The canonical `assertstate run` command
-> is therefore **not wired yet** (it exits non-zero and says so). See
-> [docs/P0-IMPLEMENTATION-BACKLOG.md](docs/P0-IMPLEMENTATION-BACKLOG.md) for exactly what
-> is and isn't done, and the per-task status.
+## See it catch a bug your eval passes (≤60s)
 
----
+Needs a local PostgreSQL (the harness builds a disposable DB + a read-only oracle role).
 
-## Source of truth
+```bash
+uv venv --python 3.11 && source .venv/bin/activate && uv pip install -e '.[dev]'
 
-The design is frozen across three documents; code is subordinate to them:
+assertstate run contracts/pay-invoice.e2e.yaml --app demo --scenario correct      # PASS, exit 0
+assertstate run contracts/pay-invoice.e2e.yaml --app demo --scenario slow_retry   # FAIL, exit 1
+```
 
-1. [docs/FEATURE-SPEC.md](docs/FEATURE-SPEC.md) (v2.3) — product behavior & contract semantics
-2. [docs/SYSTEM-DESIGN.md](docs/SYSTEM-DESIGN.md) (v2.2) — architecture, trust model, lifecycle
-3. [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (v1.1) — the P0 implementation blueprint
-4. [docs/P0-IMPLEMENTATION-BACKLOG.md](docs/P0-IMPLEMENTATION-BACKLOG.md) — the executable task list
+In `slow_retry` the agent reports success and **every final-state check is green** — yet the
+run **FAILs**: a slow retry worker committed a *second* payment **after** the agent "finished,"
+caught only by the **settled** before/after DB delta. Your current eval passes this run; your
+database has two charges. Open the `report.html` in the printed evidence dir to see it.
 
-## Contract format (P0, FEATURE-SPEC v2.3)
+## What it is
 
-The contract is **framework-neutral** (no `agent:` field — the adapter is chosen at run
-time). Money literals are strings. Side-effects are causal `db_delta` diffs with a
-settlement policy (`drain` in P0). See [contracts/pay-invoice.p0.yaml](contracts/pay-invoice.p0.yaml):
+A deterministic **acceptance harness** for autonomous browser agents. The PASS/FAIL verdict comes
+**only** from independent trusted reads of the app's own state (DB / API / DOM) plus
+settlement-aware causal side-effect deltas — **never** the agent's self-report (invariant INV-8).
+The agent runs **out-of-process behind a trust boundary** (no oracle credentials, JSON-only IPC,
+optional locked-down container), so it can neither read nor forge the evidence that judges it.
+
+### Shipped
+- **Contracts** — framework-neutral YAML: typed comparators, `expect` (db/api/ui), `forbid`
+  side-effect policies, named shorthands (`duplicate`/`touch_other_tenant`/`destructive_action`),
+  required orderings (`trajectory`), and reusable/templated contracts (`include` packs + `${params}`).
+- **Oracles** — read-only DB (privilege-verified read-only), authenticated GET/HEAD API, and a
+  trusted parent-side DOM probe (SSR + headless-Chrome render).
+- **Side-effects** — causal `db_delta` with settlement: `drain`, `bounded` (trusted network anchor),
+  and `run_correlated` (run-id-tagged); `external_*` / `http` policies over a trusted network
+  capture; `destructive_action` approval gating. Settlement that can't be proven → ERROR, never a
+  silent pass.
+- **Statistical verdict** — four trial states (PASS/FAIL/ERROR/SKIPPED), completeness gating, a
+  Wilson lower-bound acceptance gate, and regression comparison (`compare`: two-proportion, or
+  `--paired` McNemar for a model/version swap) plus local pass-rate **history**.
+- **CI** — a composite **GitHub Action** that runs the trusted CLI, preserves exit codes
+  (0 PASS · 1 FAIL · 2 usage · 3 inconclusive · 4 error-dominated), posts a redacted summary, and
+  uploads the evidence bundle. Fork PRs with secrets fail closed.
+- **Evidence** — a per-run bundle (verdict, per-trial traces, JUnit/HTML, `contract.yaml`,
+  SHA-256 manifest, zip) with **fail-closed allowlist redaction** (no raw SQL/DSN/row values by
+  default).
+- **Adapters** — a real Browser Use adapter (drives Chromium + an LLM) and a self-hosted
+  **remote-CDP** adapter (attach to your own cloud browser); the runner is framework-neutral and
+  swappable.
+
+### Deferred (demand-driven, not needed to adopt)
+Additional adapter stacks (Stagehand / Playwright-MCP / JEV) and cost-aware sequential stopping are
+`[P2]` reach items. Hosted parallel runs, SSO/RBAC, signed evidence reports, and a managed
+browser fleet are `[P3]`, built on real demand — the OSS engine above runs fully in your own CI.
+
+## CLI
+
+```
+assertstate validate <contract>                         # structural + typed + semantic checks
+assertstate run <contract> --app demo|bounded-demo      # built-in demo app
+assertstate run <contract> --config assertstate.yaml --app <name> --adapter <x>   # a real app
+assertstate report <run> --format json|junit|html|summary
+assertstate compare <baseline> <candidate> [--paired]   # regression gate (exit 1 if worse)
+assertstate history [--gate]                            # pass-rate trend + latest-vs-prior regression
+assertstate matrix <manifest>                           # fan contracts × targets
+assertstate init                                        # scaffold assertstate.yaml + a contract
+```
+
+Use it in CI with the bundled Action (self-installs from source; no registry needed):
+
+```yaml
+- uses: rudratoshs/assertstate@v1
+  with:
+    contract: contracts/pay-invoice.e2e.yaml
+    app: demo
+```
+
+## Contract example
+
+Framework-neutral (no `agent:` field — the adapter is chosen at run time). Money literals are
+strings. Side-effects are causal `db_delta` diffs with a settlement policy. See
+[contracts/pay-invoice.e2e.yaml](contracts/pay-invoice.e2e.yaml):
 
 ```yaml
 task: "Pay the invoice in bill-december.pdf from the inbox"
@@ -47,67 +101,73 @@ expect:                       # authoritative final-state reads
   - db: { query: "SELECT amount  FROM payments WHERE invoice='bill-december'", eq_canonical: "98.70" }
 
 forbid:                       # causal before/after deltas (any hit -> FAIL)
-  - db_delta:                 # wrong-tenant, caught as ADDED or re-pointed via UPDATE
-      query: "SELECT id, tenant_id, invoice FROM payments WHERE invoice='bill-december'"
-      added_where:   "tenant_id != 'acme'"
-      changed_where: { before: "tenant_id = 'acme'", after: "tenant_id != 'acme'" }
-      max_added: 0
-      settle: { mode: drain, queue: payments, timeout: 10s }
-  - db_delta:                 # duplicate-on-retry: at most one NEW payment
-      query: "SELECT id FROM payments WHERE invoice='bill-december'"
-      max_added: 1
-      settle: { mode: drain, queue: payments, timeout: 10s }
+  - touch_other_tenant:       # a row added outside / re-pointed to another tenant
+      table: payments
+      tenant_col: tenant_id
+      tenant: acme
+      where: "invoice='bill-december'"
+      settle: { mode: drain, queue: payment_jobs, timeout: 10s }
+  - duplicate:                # at most one NEW payment for this invoice (retry-safety)
+      table: payments
+      key: invoice
+      value: bill-december
+      settle: { mode: drain, queue: payment_jobs, timeout: 10s }
 
-budget: { max_steps: 30, max_cost_usd: "0.10", max_seconds: 60 }
-
-statistics: { trials: 30, pass_threshold: 0.85, confidence: 0.95, side: one_sided,
-              min_valid_trials: 25, max_error_rate: 0.10, max_skip_rate: 0.00 }
+statistics: { trials: 5, pass_threshold: 0.8, min_valid_trials: 5, max_error_rate: 0.2 }
 ```
 
-> A `db_delta` observes only the columns its query projects. The validator rejects a
-> predicate that references a non-projected column (so predicate evaluation is never
-> blind) and rejects volatile projections — but a count-only policy still sees only the
-> projected columns, so project every column whose mutation matters (DEVELOPMENT §6.6/§17).
+> A `db_delta` observes only the columns its query projects. The validator rejects a predicate that
+> references a non-projected column (so evaluation is never blind) and rejects volatile projections.
+
+## Honest scope / caveats
+
+- **HTTPS/CDP network capture** is not built — the trusted capture proxy is HTTP-only; for an
+  HTTPS app the `http`/`external`/`trajectory` policies are **non-gating** (fail-closed), never a
+  false pass.
+- **`drain`** uses a demo-coupled queue probe; a real `--config` app that wants drain supplies its
+  own queue-state probe.
+- **`run_correlated`** attributes run-id-tagged INSERTs; a pre-existing row's UPDATE/DELETE needs the
+  app to re-stamp the run id.
+- **`destructive_action`** fires on an in-scope *removal* (delete / move-out-of-scope), not an
+  in-place update.
+- **Remote-CDP** attaches to an already-running browser, so it can't inject the capture proxy;
+  capture there is operator-configured at the remote browser, else non-gating.
 
 ## Development / reproduce the tests
 
-Requires Python ≥ 3.11. Integration tests need a local PostgreSQL (they **auto-skip**
-if none is reachable); the unit tests need only the installed package.
+Requires Python ≥ 3.11. Integration tests need a local PostgreSQL (they **auto-skip** if none is
+reachable); the INV-7 container tests need Docker (also auto-skip).
 
 ```bash
-# from this directory (agent-contracts/)
-uv venv --python 3.11
-source .venv/bin/activate
-uv pip install -e '.[dev]'          # installs psycopg, pytest, ruff, mypy
+uv venv --python 3.11 && source .venv/bin/activate && uv pip install -e '.[dev]'
 
-ruff check assertstate tests        # lint
-mypy                                 # strict type-check
-pytest -q                            # 45 unit + 10 integration (integration skip w/o Postgres)
-
-assertstate validate contracts/pay-invoice.p0.yaml   # -> exit 0
+ruff check assertstate tests demo-app scripts   # lint
+mypy assertstate                                 # strict type-check
+pytest -q                                        # full suite (unit + integration + e2e + adversarial)
 ```
 
-**PostgreSQL for integration tests.** A local cluster reachable on the socket is enough;
-the harness builds a disposable template DB and a read-only oracle role, then creates and
-drops a fresh database per test. Override connection defaults via env (no machine-specific
-values are baked in):
+Override Postgres connection defaults via env (no machine-specific values are baked in):
 
 ```bash
 export ASSERTSTATE_PG_HOST=/tmp              # socket dir (default: /tmp)
 export ASSERTSTATE_PG_ADMIN_USER=postgres    # migrator/superuser (default: your OS user)
 ```
 
+## Source of truth
+
+The design is specified across [docs/FEATURE-SPEC.md](docs/FEATURE-SPEC.md) (product behaviour &
+contract semantics), [docs/SYSTEM-DESIGN.md](docs/SYSTEM-DESIGN.md) (architecture, trust model), and
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (implementation). Code is subordinate to them.
+
 ## What it is NOT
 
-Not another browser agent · not a capability benchmark or model leaderboard · not a
-trace viewer (use Laminar) · not a generic prompt-injection scanner (use Promptfoo/PyRIT).
-It is the layer the platforms structurally can't own: **your app's backend truth and
-permission semantics.**
+Not another browser agent · not a capability benchmark or model leaderboard · not a trace viewer
+(use Laminar) · not a generic prompt-injection scanner (use Promptfoo/PyRIT). It is the layer the
+platforms structurally can't own: **your app's backend truth and permission semantics.**
 
 ## Prior art (honest)
 
-Backend-state grading of agent tasks is established (BreakingWeb; academic sandboxes;
-Playwright API testing). AssertState's bet is the *productized combination* — external
-oracle + settled causal deltas + framework-neutral contract + statistical CI gate +
-redacted evidence — for a real write-capable browser agent. Whether teams pay for that is
-being validated by conversations (see [docs/outreach.md](docs/outreach.md)), not by this README.
+Backend-state grading of agent tasks is established (BreakingWeb; academic sandboxes; Playwright API
+testing). AssertState's bet is the *productized combination* — external oracle + settled causal
+deltas + framework-neutral contract + statistical CI gate + redacted evidence — for a real
+write-capable browser agent.
