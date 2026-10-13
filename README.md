@@ -171,3 +171,23 @@ Backend-state grading of agent tasks is established (BreakingWeb; academic sandb
 testing). AssertState's bet is the *productized combination* — external oracle + settled causal
 deltas + framework-neutral contract + statistical CI gate + redacted evidence — for a real
 write-capable browser agent.
+
+## How it compares
+
+Most "agent verification" tooling checks the **security boundary** (was the agent jailbroken?
+did data leave?). AssertState checks a different, complementary layer: **did the business outcome
+actually happen correctly in *your* backend** — right value, exactly once, right tenant — read
+independently from the app's own state.
+
+| Tool | Layer it verifies | Checks *your* backend truth? |
+|---|---|:--:|
+| Promptfoo / PyRIT | prompt-level red-team (model jailbreak / injection) | — |
+| [Pipelock](https://github.com/luckyPipewrench/pipelock) | egress firewall (did data leave the boundary?) | — |
+| [RAMPART](https://github.com/microsoft/RAMPART) | pytest side-effect assertions (via adapter) | — |
+| [OWASP ASRH](https://github.com/OWASP/Agent-Security-Regression-Harness) | tool-call assertions over a recorded trace | — |
+| [agentverify](https://github.com/rudratoshs/agentverify) | boundary side-effect check (reference impl) | — |
+| **AssertState** | **app DB / API / DOM state + settled causal deltas + permissions** | **✅** |
+
+The security tools answer *"did the agent do something it shouldn't?"*. AssertState answers
+*"did the agent do the thing it was asked to, correctly, exactly once, and only where allowed?"* —
+verified against the ground truth the agent can't see or fake. They stack; they don't overlap.

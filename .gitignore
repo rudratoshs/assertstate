@@ -11,3 +11,6 @@ credentials*
 .ruff_cache/
 .pytest_cache/
 *.egg-info/
+
+# scratch
+err*.txt
