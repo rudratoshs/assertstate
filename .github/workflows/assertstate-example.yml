@@ -20,6 +20,7 @@ jobs:
     env:
       ASSERTSTATE_PG_HOST: 127.0.0.1
       ASSERTSTATE_PG_ADMIN_USER: postgres
+      PGPASSWORD: postgres
     services:
       postgres:
         image: postgres:16
