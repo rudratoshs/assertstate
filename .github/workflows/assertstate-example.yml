@@ -30,6 +30,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
       - run: uv sync
+      # The composite action invokes `python` directly; put uv's environment first
+      # so the CLI and its runtime dependencies (including psycopg) use the same interpreter.
+      - name: Add uv environment to PATH for the composite action
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       # Built-in demo path (no config, no secrets — safe on fork PRs).
       - name: Run AssertState
         uses: ./ # consumer: your-org/assertstate@v1
