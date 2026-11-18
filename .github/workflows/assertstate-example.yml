@@ -17,6 +17,9 @@ permissions:
 jobs:
   assertstate: # stable job name -> use "assertstate" as the required status check (see docs)
     runs-on: ubuntu-latest
+    env:
+      ASSERTSTATE_PG_HOST: 127.0.0.1
+      ASSERTSTATE_PG_ADMIN_USER: postgres
     services:
       postgres:
         image: postgres:16
