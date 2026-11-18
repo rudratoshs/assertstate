@@ -7,7 +7,7 @@ name: AssertState
 
 on:
   pull_request:
-    paths: ["contracts/**", "assertstate/**"]
+    paths: ["contracts/**", "assertstate/**", "action.yml", ".github/workflows/assertstate-example.yml"]
   push:
     branches: [main]
 
@@ -17,11 +17,15 @@ permissions:
 jobs:
   assertstate: # stable job name -> use "assertstate" as the required status check (see docs)
     runs-on: ubuntu-latest
+    env:
+      ASSERTSTATE_PG_HOST: 127.0.0.1
+      ASSERTSTATE_PG_ADMIN_USER: postgres
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust # disposable CI-only database; no production data
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready --health-interval 10s
@@ -30,6 +34,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
       - run: uv sync
+      # The composite action invokes `python` directly; put uv's environment first
+      # so the CLI and its runtime dependencies (including psycopg) use the same interpreter.
+      - name: Add uv environment to PATH for the composite action
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       # Built-in demo path (no config, no secrets — safe on fork PRs).
       - name: Run AssertState
         uses: ./ # consumer: your-org/assertstate@v1

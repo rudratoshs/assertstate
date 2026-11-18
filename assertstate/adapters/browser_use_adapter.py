@@ -49,7 +49,8 @@ class BrowserUseAdapter:
         proxy: str | None,
         cdp_url: str | None,
     ) -> tuple[bool, list[dict[str, Any]]]:
-        from browser_use import Agent, BrowserProfile, ChatOpenAI
+        # Browser Use is an optional runtime adapter, not a core dependency.
+        from browser_use import Agent, BrowserProfile, ChatOpenAI  # type: ignore[import-not-found]
 
         if cdp_url:
             # REMOTE: attach to an operator-controlled cloud browser over CDP (§9.5). We do NOT
