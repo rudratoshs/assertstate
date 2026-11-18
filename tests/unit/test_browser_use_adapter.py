@@ -19,7 +19,7 @@ from assertstate.adapters.browser_use_adapter import BrowserUseAdapter
 
 
 def _install_browser_use_stub(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    """Install the tiny interface this adapter needs; CI must not install a live LLM/browser stack."""
+    """Install the adapter interface without a live LLM/browser stack."""
     module = ModuleType("browser_use")
     module.Agent = None
     module.BrowserProfile = None
