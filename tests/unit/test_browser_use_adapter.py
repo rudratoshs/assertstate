@@ -9,11 +9,23 @@ out-of-process with only {task, browser_target, budget, run_id}) and is wired in
 from __future__ import annotations
 
 import inspect
+import sys
+from types import ModuleType
 from typing import Any
 
 import pytest
 
 from assertstate.adapters.browser_use_adapter import BrowserUseAdapter
+
+
+def _install_browser_use_stub(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """Install the tiny interface this adapter needs; CI must not install a live LLM/browser stack."""
+    module = ModuleType("browser_use")
+    module.Agent = None
+    module.BrowserProfile = None
+    module.ChatOpenAI = None
+    monkeypatch.setitem(sys.modules, "browser_use", module)
+    return module
 
 
 def test_browser_use_adapter_matches_execution_adapter_signature() -> None:
@@ -38,7 +50,7 @@ def test_browser_use_adapter_routes_through_capture_proxy(monkeypatch: pytest.Mo
     """Mock browser_use (no live LLM/browser): the trusted capture proxy (§3) must reach Chromium
     via `--proxy-server`, and the agent's claimed-done must surface. Guards the proxy wiring I rely
     on for http/external/trajectory gating against a real `--config` app."""
-    import browser_use  # the real package is importable in the venv
+    browser_use = _install_browser_use_stub(monkeypatch)
 
     captured: dict[str, Any] = {}
 
@@ -79,7 +91,7 @@ def test_browser_use_adapter_routes_through_capture_proxy(monkeypatch: pytest.Mo
 
 
 def test_browser_use_adapter_no_proxy_passes_no_proxy_arg(monkeypatch: pytest.MonkeyPatch) -> None:
-    import browser_use
+    browser_use = _install_browser_use_stub(monkeypatch)
 
     captured: dict[str, Any] = {}
 
