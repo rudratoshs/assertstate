@@ -40,13 +40,25 @@ jobs:
         run: uv run mypy
       - name: Tests (unit + integration against the postgres service)
         run: uv run pytest -q
-      # The final E2E test is the deliberate slow-retry counterfactual. Preserve its
-      # redacted run bundle so the result can be reviewed and cited in the demo report.
+      # Re-run the negative control after the suite because its test fixture cleans up
+      # fixed run IDs between tests. Exit 1 is the expected contract failure.
+      - name: Run slow-retry counterfactual
+        if: success()
+        shell: bash
+        run: |
+          set +e
+          uv run python -m assertstate.cli run contracts/pay-invoice.e2e.yaml --app demo --scenario slow_retry --run-id ci-slow-retry
+          verdict=$?
+          set -e
+          if [ "$verdict" -ne 1 ]; then
+            echo "::error::Expected the slow-retry counterfactual to fail with exit 1; got $verdict"
+            exit 1
+          fi
       - name: Upload slow-retry counterfactual evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: assertstate-slow-retry-counterfactual
-          path: .assertstate/runs/x1-fail/
+          path: .assertstate/runs/ci-slow-retry/
           if-no-files-found: error
           include-hidden-files: true
