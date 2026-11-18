@@ -20,12 +20,12 @@ jobs:
     env:
       ASSERTSTATE_PG_HOST: 127.0.0.1
       ASSERTSTATE_PG_ADMIN_USER: postgres
-      PGPASSWORD: postgres
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust # disposable CI-only database; no production data
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready --health-interval 10s
