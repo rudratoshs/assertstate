@@ -69,7 +69,7 @@ runs:
       shell: bash
       run: |
         set -uo pipefail
-        if ! python -c "import assertstate" 2>/dev/null; then
+        if ! python -c "import assertstate, psycopg" 2>/dev/null; then
           python -m pip install "${GITHUB_ACTION_PATH:-.}"
         fi
     # Fork fail-closed: a fork PR must never run against a real app's oracle secrets unless the
