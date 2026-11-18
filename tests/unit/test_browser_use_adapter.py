@@ -136,7 +136,7 @@ def test_browser_use_adapter_remote_cdp_attaches_and_omits_launch_flags(
     cdp_url and must NOT pass launch-only flags (executable_path / headless / `--proxy-server`),
     since those don't apply to an already-running browser. A proxy present in browser_target must
     therefore NOT leak into the attached profile (capture is operator-side for remote browsers)."""
-    import browser_use
+    browser_use = _install_browser_use_stub(monkeypatch)
 
     captured: dict[str, Any] = {}
 
