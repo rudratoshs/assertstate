@@ -40,3 +40,13 @@ jobs:
         run: uv run mypy
       - name: Tests (unit + integration against the postgres service)
         run: uv run pytest -q
+      # The final E2E test is the deliberate slow-retry counterfactual. Preserve its
+      # redacted run bundle so the result can be reviewed and cited in the demo report.
+      - name: Upload slow-retry counterfactual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assertstate-slow-retry-counterfactual
+          path: .assertstate/runs/x1-fail/
+          if-no-files-found: error
+          include-hidden-files: true
