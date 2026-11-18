@@ -8,6 +8,7 @@ Evidence is written. Skips if no local Postgres.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,8 +23,11 @@ _RUN_IDS = ("x1-fail", "x1-pass", "x1-redact")
 
 
 def _pg() -> bool:
+    # Match the host configured for ClusterConfig so CI can use its TCP PostgreSQL service
+    # while local Homebrew/Postgres setups can keep the default Unix socket at /tmp.
+    host = os.environ.get("ASSERTSTATE_PG_HOST", "/tmp")
     try:
-        return subprocess.run(["pg_isready", "-h", "/tmp"], capture_output=True).returncode == 0
+        return subprocess.run(["pg_isready", "-h", host], capture_output=True).returncode == 0
     except FileNotFoundError:
         return False
 
