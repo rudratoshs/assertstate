@@ -7,7 +7,7 @@ name: AssertState
 
 on:
   pull_request:
-    paths: ["contracts/**", "assertstate/**"]
+    paths: ["contracts/**", "assertstate/**", "action.yml", ".github/workflows/assertstate-example.yml"]
   push:
     branches: [main]
 
